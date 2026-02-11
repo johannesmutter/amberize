@@ -1,0 +1,16 @@
+# Cargo build-time configuration for Amberize.
+#
+# Copy this file to `.cargo/config.toml` and fill in your values.
+# `.cargo/config.toml` is gitignored — it will NOT be committed.
+#
+# To obtain these credentials:
+#   1. Go to https://console.cloud.google.com/apis/credentials
+#   2. Create or select a project
+#   3. Configure the OAuth consent screen (APIs & Services → OAuth consent screen)
+#   4. Create Credentials → OAuth client ID → Desktop app
+#   5. Copy the Client ID and Client Secret below
+#   6. Enable the Gmail API (APIs & Services → Library → Gmail API)
+
+[env]
+GOOGLE_OAUTH_CLIENT_ID = ""
+GOOGLE_OAUTH_CLIENT_SECRET = ""

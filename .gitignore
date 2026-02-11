@@ -1,0 +1,43 @@
+# ─── Rust ───
+target/
+
+# ─── Node / npm ───
+node_modules/
+
+# ─── Vite / SvelteKit build output ───
+dist/
+
+# ─── Test coverage ───
+coverage/
+
+# ─── Tauri generated files (rebuilt automatically) ───
+apps/desktop/src-tauri/gen/
+
+# ─── Local data / databases ───
+email-archive-data/
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+
+# ─── OS files ───
+.DS_Store
+Thumbs.db
+
+# ─── Editor / IDE ───
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ─── Environment / secrets ───
+.env
+.env.*
+.cargo/config.toml
+*.key
+*.pem
+apps/desktop/src-tauri/amberize.key
+certs/
+
+# —— Scripts ——
+scripts/__pycache__/

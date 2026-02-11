@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+# Needed so the workflow can create a draft GitHub Release
+# and upload assets via the `GITHUB_TOKEN`.
+permissions:
+  contents: write
+
+# Only allow one release build at a time.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            bundles: "app,dmg"
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            bundles: "app,dmg"
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            bundles: "msi"
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            bundles: "appimage,deb"
+
+    runs-on: ${{ matrix.runner }}
+
+    # Read secrets into env vars so we can safely check them in `if:`
+    # (GitHub's workflow validator can reject `secrets.*` inside `if:` expressions).
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      - name: Build Tauri app (macOS signed + notarized)
+        if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_ID != '' && env.APPLE_PASSWORD != '' && env.APPLE_TEAM_ID != ''
+        uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npx tauri
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "Amberize ${{ github.ref_name }}"
+          releaseBody: |
+            See the full changelog in the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          includeRelease: true
+
+      - name: Build Tauri app
+        if: runner.os != 'macOS' || env.APPLE_CERTIFICATE == '' || env.APPLE_CERTIFICATE_PASSWORD == '' || env.APPLE_ID == '' || env.APPLE_PASSWORD == '' || env.APPLE_TEAM_ID == ''
+        uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: apps/desktop
+          tauriScript: npx tauri
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "Amberize ${{ github.ref_name }}"
+          releaseBody: |
+            See the full changelog in the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          includeRelease: true

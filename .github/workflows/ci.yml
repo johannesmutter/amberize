@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+# Cancel in-progress runs for the same branch/PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-latest
+            coverage: true
+          - runner: ubuntu-latest
+            coverage: false
+          - runner: windows-latest
+            coverage: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+        with:
+          components: rustfmt, clippy, llvm-tools-preview
+
+      - name: Cache Cargo registry + build artifacts
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+
+      - name: Install cargo-llvm-cov
+        if: matrix.coverage
+        uses: taiki-e/install-action@321fc0a24c15fdabb1b79b9ebd2a5963754771b2 # cargo-llvm-cov
+
+      - name: Create frontend dist stub for Tauri context macro
+        run: mkdir -p apps/desktop/dist && echo '<html><body></body></html>' > apps/desktop/dist/index.html
+        shell: bash
+
+      - name: Rust formatting (rustfmt)
+        if: runner.os == 'macOS'
+        run: cargo fmt --all -- --check
+
+      - name: Dependency audit (cargo audit)
+        if: matrix.coverage
+        run: cargo audit || true
+
+      - name: Rust lint (clippy)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Rust tests
+        run: cargo test --workspace
+
+      - name: Rust coverage report (informational)
+        if: matrix.coverage
+        run: cargo llvm-cov --workspace --all-features --lcov --output-path lcov.info
+
+      - name: Upload Rust coverage (lcov)
+        if: matrix.coverage && always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rust-coverage-lcov
+          path: lcov.info
+
+  ui:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: UI tests + coverage
+        run: npm test -- --coverage
+
+      - name: UI build
+        run: npm run build
+
+      - name: Upload UI coverage (lcov)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ui-coverage-lcov
+          path: apps/desktop/coverage/lcov.info

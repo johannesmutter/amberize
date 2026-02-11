@@ -1,0 +1,42 @@
+[package]
+name = "amberize"
+version = "0.1.6"
+description = "Amberize - Seal emails in time"
+authors = ["Johannes Mutter"]
+license = "MIT"
+edition = "2021"
+publish = false
+default-run = "Amberize"
+
+[[bin]]
+name = "Amberize"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+time = { version = "0.3", features = ["formatting"] }
+uuid = { version = "1", features = ["v4"] }
+zip = "7"
+tokio = { version = "1", features = ["sync", "time"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-updater = "2"
+
+mail-parser = "0.11"
+base64 = "0.22"
+
+email_archiver_storage = { path = "../../../crates/storage" }
+email_archiver_adapters = { path = "../../../crates/adapters" }
+
+[target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
+tauri-plugin-autostart = "2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+

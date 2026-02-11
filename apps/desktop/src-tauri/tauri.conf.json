@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Amberize",
+  "version": "0.1.6",
+  "identifier": "com.amberize.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://127.0.0.1:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Amberize \u2014 Seal your emails in time",
+        "width": 900,
+        "height": 700,
+        "resizable": true,
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' asset:; img-src 'self' asset: data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "icon": [
+      "icons/icon.icns",
+      "icons/icon.png",
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Local-first email archiving with GoBD compliance",
+    "longDescription": "Amberize archives IMAP emails locally into a tamper-evident SQLite database. Search, view, and export emails for audit compliance (GoBD). Email archiver, mail archiving, E-Mail-Archivierung.",
+    "copyright": "\u00a9 2026 Amberize",
+    "category": "Productivity",
+    "createUpdaterArtifacts": "v1Compatible",
+    "macOS": {
+      "entitlements": null,
+      "frameworks": [],
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libgtk-3-0",
+          "libwebkit2gtk-4.1-0",
+          "libayatana-appindicator3-1",
+          "librsvg2-common"
+        ]
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDMzOTgyNzYwNjE1QTJBMDcKUldRSEtscGhZQ2VZTTF3ZXVleUZPM3FoUUxLNElNZlhPeUo1RmxTNWFWTktwZHFQRml6SDQ3dmIK",
+      "endpoints": [
+        "https://github.com/johannesmutter/amberize/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}

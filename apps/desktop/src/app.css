@@ -1,0 +1,391 @@
+/**
+ * Amberize - Design System
+ * Color theme: Baltic Amber - rich golden-orange with warm undertones
+ * Built with OKLCH for perceptually uniform color manipulation
+ * Principle: Less is more. Warm, inviting, timeless.
+ */
+
+:root {
+  /* ═══════════════════════════════════════════════════════════════════════════
+     COLOR PRIMITIVES - The foundation everything builds upon
+     OKLCH format: oklch(Lightness Chroma Hue)
+     - Lightness: 0-100% (0 = black, 100 = white)
+     - Chroma: 0-0.4 (saturation intensity)
+     - Hue: 0-360 degrees (amber ≈ 75°)
+     ═══════════════════════════════════════════════════════════════════════════ */
+  
+  /* Primary hue - Baltic Amber (golden-orange) */
+  --hue-primary: 75;
+  --hue-error: 25;      /* Warm red-orange */
+  --hue-success: 145;   /* Muted teal-green */
+  
+  /* Chroma levels */
+  --chroma-vivid: 0.18;
+  --chroma-muted: 0.08;
+  --chroma-subtle: 0.03;
+  --chroma-neutral: 0.01;
+  
+  /* ═══════════════════════════════════════════════════════════════════════════
+     LIGHT MODE - Warm, paper-like aesthetic
+     ═══════════════════════════════════════════════════════════════════════════ */
+  
+  /* Accent colors - derived from primary hue */
+  --color-accent: oklch(65% var(--chroma-vivid) var(--hue-primary));
+  --color-accent-hover: oklch(55% var(--chroma-vivid) var(--hue-primary));
+  --color-accent-soft: oklch(95% var(--chroma-subtle) var(--hue-primary));
+  --color-accent-muted: oklch(80% var(--chroma-muted) var(--hue-primary));
+  
+  /* Background colors - warm paper tones */
+  --color-bg: oklch(99% var(--chroma-neutral) var(--hue-primary));
+  --color-bg-secondary: oklch(97% var(--chroma-neutral) var(--hue-primary));
+  --color-bg-tertiary: oklch(94% var(--chroma-neutral) var(--hue-primary));
+  --color-bg-warm: oklch(96% var(--chroma-subtle) var(--hue-primary));
+  
+  /* Border colors */
+  --color-border: oklch(88% var(--chroma-neutral) var(--hue-primary));
+  --color-border-strong: oklch(82% var(--chroma-neutral) var(--hue-primary));
+  
+  /* Text colors - warm grays */
+  --color-text: oklch(20% var(--chroma-neutral) var(--hue-primary));
+  --color-text-secondary: oklch(45% var(--chroma-neutral) var(--hue-primary));
+  --color-text-tertiary: oklch(60% var(--chroma-neutral) var(--hue-primary));
+  --color-text-on-accent: oklch(100% 0 0);
+  
+  /* Semantic colors */
+  --color-error: oklch(55% 0.2 var(--hue-error));
+  --color-error-bg: oklch(95% 0.04 var(--hue-error));
+  --color-success: oklch(55% 0.12 var(--hue-success));
+  --color-success-bg: oklch(95% 0.03 var(--hue-success));
+  
+  /* ═══════════════════════════════════════════════════════════════════════════
+     SPACING
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+  
+  /* ═══════════════════════════════════════════════════════════════════════════
+     BORDER RADIUS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  
+  /* ═══════════════════════════════════════════════════════════════════════════
+     TYPOGRAPHY
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+  --font-size-xs: 11px;
+  --font-size-sm: 12px;
+  --font-size-base: 13px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --line-height: 1.5;
+  
+  /* ═══════════════════════════════════════════════════════════════════════════
+     SHADOWS - Warm tinted
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --shadow-sm: 0 1px 2px oklch(20% 0.02 var(--hue-primary) / 0.06);
+  --shadow-md: 0 2px 8px oklch(20% 0.02 var(--hue-primary) / 0.08);
+  --shadow-lg: 0 4px 16px oklch(20% 0.02 var(--hue-primary) / 0.12);
+  
+  /* ═══════════════════════════════════════════════════════════════════════════
+     TRANSITIONS
+     ═══════════════════════════════════════════════════════════════════════════ */
+  --transition-fast: 120ms ease;
+  --transition-normal: 200ms ease;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   DARK MODE - Deep amber warmth
+   ═══════════════════════════════════════════════════════════════════════════════ */
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Accent - brighter in dark mode for visibility */
+    --color-accent: oklch(75% var(--chroma-vivid) var(--hue-primary));
+    --color-accent-hover: oklch(80% var(--chroma-vivid) var(--hue-primary));
+    --color-accent-soft: oklch(25% var(--chroma-subtle) var(--hue-primary));
+    --color-accent-muted: oklch(40% var(--chroma-muted) var(--hue-primary));
+    
+    /* Backgrounds - deep warm tones */
+    --color-bg: oklch(15% var(--chroma-neutral) var(--hue-primary));
+    --color-bg-secondary: oklch(20% var(--chroma-neutral) var(--hue-primary));
+    --color-bg-tertiary: oklch(25% var(--chroma-neutral) var(--hue-primary));
+    --color-bg-warm: oklch(18% var(--chroma-subtle) var(--hue-primary));
+    
+    /* Borders */
+    --color-border: oklch(28% var(--chroma-neutral) var(--hue-primary));
+    --color-border-strong: oklch(35% var(--chroma-neutral) var(--hue-primary));
+    
+    /* Text */
+    --color-text: oklch(92% var(--chroma-neutral) var(--hue-primary));
+    --color-text-secondary: oklch(70% var(--chroma-neutral) var(--hue-primary));
+    --color-text-tertiary: oklch(50% var(--chroma-neutral) var(--hue-primary));
+    --color-text-on-accent: oklch(15% 0.02 var(--hue-primary));
+    
+    /* Semantic */
+    --color-error: oklch(70% 0.18 var(--hue-error));
+    --color-error-bg: oklch(25% 0.06 var(--hue-error));
+    --color-success: oklch(70% 0.12 var(--hue-success));
+    --color-success-bg: oklch(25% 0.04 var(--hue-success));
+    
+    /* Shadows - darker in dark mode */
+    --shadow-sm: 0 1px 2px oklch(0% 0 0 / 0.2);
+    --shadow-md: 0 2px 8px oklch(0% 0 0 / 0.3);
+    --shadow-lg: 0 4px 16px oklch(0% 0 0 / 0.4);
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   BASE RESET
+   ═══════════════════════════════════════════════════════════════════════════════ */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height);
+  color: var(--color-text);
+  background: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   macOS TRAFFIC LIGHT SAFE AREA
+   With titleBarStyle: "overlay", content extends behind the native title bar.
+   The traffic lights occupy ~38px from the top on macOS.
+   ═══════════════════════════════════════════════════════════════════════════════ */
+:root {
+  --titlebar-height: 38px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   TYPOGRAPHY
+   ═══════════════════════════════════════════════════════════════════════════════ */
+h1, h2, h3, h4, h5, h6 {
+  margin: 0;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.3;
+}
+
+p {
+  margin: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   FORM ELEMENTS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+input, select, textarea, button {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+/* Input fields */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="search"],
+textarea {
+  width: 100%;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+input[type="text"]:hover,
+input[type="email"]:hover,
+input[type="password"]:hover,
+input[type="number"]:hover,
+input[type="search"]:hover,
+textarea:hover {
+  border-color: var(--color-accent-muted);
+}
+
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="search"]:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+/* Select dropdowns */
+select {
+  padding: var(--space-sm) var(--space-md);
+  padding-right: 28px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23997a4d' d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  transition: border-color var(--transition-fast);
+}
+
+select:hover {
+  border-color: var(--color-accent-muted);
+}
+
+select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-soft);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   BUTTONS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-xs);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+}
+
+button:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border-strong);
+}
+
+button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Primary button */
+button.primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-on-accent);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+/* Ghost button */
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-text-secondary);
+}
+
+button.ghost:hover:not(:disabled) {
+  background: var(--color-bg-tertiary);
+  color: var(--color-text);
+}
+
+/* Link button */
+button.link {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--color-accent);
+  font-weight: var(--font-weight-normal);
+}
+
+button.link:hover:not(:disabled) {
+  text-decoration: underline;
+  background: transparent;
+}
+
+/* Danger button */
+button.danger {
+  color: var(--color-error);
+  border-color: var(--color-error);
+  background: transparent;
+}
+
+button.danger:hover:not(:disabled) {
+  background: var(--color-error);
+  color: white;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   CHECKBOXES
+   ═══════════════════════════════════════════════════════════════════════════════ */
+input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   FOCUS STATES
+   ═══════════════════════════════════════════════════════════════════════════════ */
+*:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SCROLLBARS
+   ═══════════════════════════════════════════════════════════════════════════════ */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-accent-muted);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════════
+   SELECTION
+   ═══════════════════════════════════════════════════════════════════════════════ */
+::selection {
+  background: var(--color-accent-soft);
+  color: var(--color-text);
+}
