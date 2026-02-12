@@ -30,6 +30,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_commands::autostart_is_enabled,
             app_commands::autostart_set_enabled,
+            app_commands::restart_app,
             app_commands::imap_discover_mailboxes,
             app_commands::create_account_and_discover_mailboxes,
             app_commands::list_accounts,

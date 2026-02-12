@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "amberize"
-version = "0.1.0"
+version = "0.1.10"
 dependencies = [
  "base64 0.22.1",
  "email_archiver_adapters",
@@ -984,7 +984,7 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "email_archiver_adapters"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "async-imap",
  "async-native-tls",
@@ -1008,7 +1008,7 @@ dependencies = [
 
 [[package]]
 name = "email_archiver_storage"
-version = "0.1.0"
+version = "0.1.5"
 dependencies = [
  "hex",
  "rusqlite",

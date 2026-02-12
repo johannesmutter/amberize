@@ -377,6 +377,11 @@ pub fn autostart_set_enabled(app_handle: AppHandle, enabled: bool) -> Result<(),
 }
 
 #[tauri::command]
+pub fn restart_app(app_handle: AppHandle) {
+    app_handle.restart();
+}
+
+#[tauri::command]
 pub async fn imap_discover_mailboxes(
     input: ImapDiscoverInput,
 ) -> Result<Vec<DiscoveredMailbox>, String> {

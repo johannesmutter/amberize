@@ -3,7 +3,7 @@
   import MainDashboard from './components/MainDashboard.svelte';
   import SettingsPage from './components/SettingsPage.svelte';
   import { load_config, save_config } from './lib/config.js';
-  import { tauri_invoke, tauri_listen, tauri_save_dialog, tauri_check_update } from './lib/tauri_bridge.js';
+  import { tauri_invoke, tauri_listen, tauri_save_dialog, tauri_check_update, tauri_restart_app } from './lib/tauri_bridge.js';
 
   let config = $state(null);
   let config_loading = $state(true);
@@ -23,6 +23,7 @@
   /** @type {string | null} */
   let update_message = $state(null);
   let update_installing = $state(false);
+  let update_restart_ready = $state(false);
   let dashboard_action_nonce = $state(0);
   let dashboard_action_type = $state('');
   /** @type {{ ok: boolean, issues: string[] } | null} */
@@ -144,9 +145,11 @@
       if (update) {
         available_update = update;
         update_message = null;
+        update_restart_ready = false;
       } else {
         available_update = null;
         update_message = 'You are running the latest version.';
+        update_restart_ready = false;
       }
     } catch (err) {
       update_message = err instanceof Error ? err.message : String(err);
@@ -159,21 +162,38 @@
     if (!available_update || update_installing) return;
     update_installing = true;
     update_message = 'Downloading update…';
+    const installed_version = available_update.version;
 
     try {
       await available_update.download_and_install();
-      // The app will restart automatically after install.
+      // Keep UI state consistent: install can succeed even if this process
+      // has not restarted yet.
+      available_update = null;
+      update_message = `Update installed (v${installed_version}). Please restart Amberize to finish.`;
+      update_restart_ready = true;
     } catch (err) {
       update_message = err instanceof Error ? err.message : String(err);
+      update_restart_ready = false;
       console.error('Failed to install update:', err);
     } finally {
       update_installing = false;
     }
   }
 
+  async function handle_restart_after_update() {
+    if (!update_restart_ready || update_installing) return;
+    update_message = 'Restarting app…';
+    try {
+      await tauri_restart_app();
+    } catch (err) {
+      update_message = err instanceof Error ? err.message : String(err);
+    }
+  }
+
   function dismiss_update() {
     available_update = null;
     update_message = null;
+    update_restart_ready = false;
   }
 
   async function sync_backend_active_db_path() {
@@ -411,6 +431,11 @@
 {:else if update_message}
   <div class="update-banner update-banner-info">
     <span class="update-banner-text">{update_message}</span>
+    {#if update_restart_ready}
+      <button type="button" class="update-banner-action" onclick={handle_restart_after_update}>
+        Restart now
+      </button>
+    {/if}
     <button type="button" class="update-banner-dismiss" onclick={dismiss_update} aria-label="Dismiss">
       ×
     </button>

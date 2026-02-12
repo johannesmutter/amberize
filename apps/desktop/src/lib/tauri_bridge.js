@@ -83,6 +83,18 @@ export async function tauri_check_update() {
 }
 
 /**
+ * Restart the current Tauri application process.
+ * @returns {Promise<void>}
+ */
+export async function tauri_restart_app() {
+  try {
+    await tauri_invoke('restart_app');
+  } catch (err) {
+    throw new Error(`App restart unavailable: ${stringify_error(err)}`);
+  }
+}
+
+/**
  * @param {unknown} err
  * @returns {string}
  */
