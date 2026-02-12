@@ -742,9 +742,10 @@
   .cta-downloads {
     margin-top: 0.5rem;
     font-size: var(--text-xs);
-    font-weight: 600;
     color: var(--color-amber);
-    letter-spacing: 0.03em;
+    width: fit-content;
+    border-bottom: 1px solid var(--color-border);
+    padding-block: 3px;
   }
 
   /* ───── Responsive ───── */

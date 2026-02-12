@@ -1,10 +1,10 @@
 {
-  "total_downloads": 10,
+  "total_downloads": 11,
   "latest_version": "0.2.0",
   "releases": [
     {
       "tag": "v0.2.0",
-      "downloads": 10
+      "downloads": 11
     }
   ]
 }
