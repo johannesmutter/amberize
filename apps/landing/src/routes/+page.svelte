@@ -2,11 +2,44 @@
   import { translations, os_terms, get_os_vars, t } from '$lib/i18n.js';
   import { app } from '$lib/app.svelte.js';
   import { reveal } from '$lib/reveal.js';
+  import download_stats from '$lib/download-stats.json';
 
   const GITHUB_URL = 'https://github.com/johannesmutter/amberize';
-  const DOWNLOAD_URL = `${GITHUB_URL}/releases/latest`;
+  const RELEASES_URL = `${GITHUB_URL}/releases/latest`;
   const WEBSITE_URL = 'https://mutter.co';
   const TWITTER_URL = 'https://x.com/johannesmutter';
+
+  const VERSION = download_stats.latest_version || '0.2.0';
+
+  /**
+   * Build the GitHub download URL for a given asset filename.
+   * @param {string} filename
+   * @returns {string}
+   */
+  function asset_url(filename) {
+    return `${GITHUB_URL}/releases/download/v${VERSION}/${filename}`;
+  }
+
+  /** @type {Record<string, string>} OS → primary installer filename */
+  const DOWNLOAD_FILES = {
+    mac_arm:  `Amberize_${VERSION}_aarch64.dmg`,
+    mac_x64:  `Amberize_${VERSION}_x64.dmg`,
+    windows:  `Amberize_${VERSION}_x64_en-US.msi`,
+    linux:    `Amberize_${VERSION}_amd64.deb`,
+  };
+
+  let mac_dropdown_open = $state(false);
+
+  /**
+   * Primary download URL based on detected OS.
+   * For macOS defaults to Apple Silicon (aarch64).
+   * @returns {string}
+   */
+  let primary_download_url = $derived(
+    app.os === 'mac'     ? asset_url(DOWNLOAD_FILES.mac_arm)
+    : app.os === 'windows' ? asset_url(DOWNLOAD_FILES.windows)
+    : asset_url(DOWNLOAD_FILES.linux)
+  );
 
   let s = $derived(translations[app.locale]);
   let os_vars = $derived(get_os_vars(app.locale, app.os));
@@ -52,6 +85,18 @@
     desc: tr(`limit_${i}_desc`)
   })));
 
+  const MIN_DOWNLOADS_TO_SHOW = 10;
+  let total_downloads = download_stats.total_downloads ?? 0;
+
+  /**
+   * Format download count text with locale-aware placeholder.
+   * @returns {string}
+   */
+  let downloads_text = $derived(() => {
+    if (total_downloads < MIN_DOWNLOADS_TO_SHOW) return '';
+    return tr('cta_downloads').replace('{count}', total_downloads.toLocaleString());
+  });
+
   /**
    * Split title on \n to allow a line break in the heading.
    * @param {string} raw
@@ -60,10 +105,54 @@
   function title_lines(raw) {
     return raw.split('\n');
   }
+
+  /** Close the macOS dropdown when clicking outside. */
+  function handle_click_outside() {
+    mac_dropdown_open = false;
+  }
 </script>
 
+{#snippet download_button(button_class)}
+  {#if app.os === 'mac'}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div
+      class="download-split"
+      onmouseleave={() => mac_dropdown_open = false}
+    >
+      <a href={primary_download_url} class="btn {button_class} download-main" rel="noopener">
+        {tr('hero_cta_download')}
+      </a>
+      <button
+        class="btn {button_class} download-chevron"
+        aria-label="Choose macOS architecture"
+        aria-expanded={mac_dropdown_open}
+        onclick={(e) => { e.stopPropagation(); mac_dropdown_open = !mac_dropdown_open; }}
+      >
+        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" aria-hidden="true">
+          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      {#if mac_dropdown_open}
+        <div class="download-dropdown" role="menu">
+          <a href={asset_url(DOWNLOAD_FILES.mac_arm)} class="download-option" role="menuitem" rel="noopener">
+            {tr('mac_apple_silicon')}
+          </a>
+          <a href={asset_url(DOWNLOAD_FILES.mac_x64)} class="download-option" role="menuitem" rel="noopener">
+            {tr('mac_intel')}
+          </a>
+        </div>
+      {/if}
+    </div>
+  {:else}
+    <a href={primary_download_url} class="btn {button_class}" rel="noopener">
+      {tr('hero_cta_download')}
+    </a>
+  {/if}
+{/snippet}
+
 <!-- Hero -->
-<section class="hero" use:reveal>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<section class="hero" use:reveal onclick={handle_click_outside}>
   <p class="hero-eyebrow">{tr('hero_eyebrow')}</p>
   <h1>
     {#each title_lines(tr('hero_title')) as line, i}
@@ -72,15 +161,13 @@
   </h1>
   <p class="hero-sub">{tr('hero_sub')}</p>
   <div class="hero-actions">
-    <a href={DOWNLOAD_URL} class="btn btn-primary" target="_blank" rel="noopener">
-      {tr('hero_cta_download')}
-    </a>
+    {@render download_button('btn-primary')}
     <a href="#how-it-works" class="btn btn-secondary">
       {tr('hero_cta_how')}
     </a>
   </div>
   <p class="platform-note">
-    <a href={DOWNLOAD_URL} target="_blank" rel="noopener">{other_platforms_text()}</a>
+    <a href={RELEASES_URL} target="_blank" rel="noopener">{other_platforms_text()}</a>
   </p>
 </section>
 
@@ -197,18 +284,20 @@
 </section>
 
 <!-- CTA -->
-<section class="cta" use:reveal>
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<section class="cta" use:reveal onclick={handle_click_outside}>
   <h2>{tr('cta_title')}</h2>
   <p>{tr('cta_sub')}</p>
   <div class="hero-actions">
-    <a href={DOWNLOAD_URL} class="btn btn-primary" target="_blank" rel="noopener">
-      {tr('cta_button')}
-    </a>
+    {@render download_button('btn-primary')}
   </div>
   <p class="platform-note">
-    <a href={DOWNLOAD_URL} target="_blank" rel="noopener">{other_platforms_text()}</a>
+    <a href={RELEASES_URL} target="_blank" rel="noopener">{other_platforms_text()}</a>
   </p>
   <p class="cta-note">{tr('cta_note')}</p>
+  {#if downloads_text()}
+    <p class="cta-downloads">{downloads_text()}</p>
+  {/if}
 </section>
 
 <style>
@@ -243,6 +332,55 @@
     gap: 0.75rem;
     justify-content: center;
     flex-wrap: wrap;
+  }
+
+  /* ───── Download split button ───── */
+  .download-split {
+    position: relative;
+    display: inline-flex;
+  }
+  .download-main {
+    border-top-right-radius: 0;
+    border-bottom-right-radius: 0;
+    padding-right: 1.25rem;
+  }
+  .download-chevron {
+    border-top-left-radius: 0;
+    border-bottom-left-radius: 0;
+    border-left: 1px solid rgba(255, 255, 255, 0.25);
+    padding: 0.75rem 0.65rem;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+  }
+  .download-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    right: 0;
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.06);
+    z-index: 10;
+    overflow: hidden;
+    min-width: max-content;
+  }
+  .download-option {
+    display: block;
+    padding: 0.6rem 1rem;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    color: var(--color-text);
+    text-decoration: none;
+    transition: background 0.15s ease, color 0.15s ease;
+  }
+  .download-option:hover {
+    background: var(--color-amber-light);
+    color: var(--color-amber-hover);
+  }
+  .download-option + .download-option {
+    border-top: 1px solid var(--color-border-light);
   }
 
   /* ───── Platform note ───── */
@@ -586,6 +724,13 @@
     font-size: var(--text-xs);
     color: var(--color-text-faint);
     letter-spacing: 0.01em;
+  }
+  .cta-downloads {
+    margin-top: 0.5rem;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-amber);
+    letter-spacing: 0.03em;
   }
 
   /* ───── Responsive ───── */

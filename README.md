@@ -1,10 +1,10 @@
-# Amberize — Seal your emails in time
+# Amberize — Your emails, safely archived for the next tax audit
 
-Amberize is a free, open-source desktop app that archives your IMAP emails into a local, tamper-evident SQLite database. It's built for German freelancers, small businesses, and tax advisors who need to meet GoBD email archiving requirements without the complexity or cost of enterprise solutions.
-
-**One file. Fully searchable. Audit-ready.**
+Amberize saves your business emails to your computer — searchable, tamper-proof, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.
 
 **Website**: [amberize.fly.dev](https://amberize.fly.dev/)
+
+Available for **macOS**, **Windows**, and **Linux**. Built for freelancers, small businesses, and tax advisors in Germany. Open source and free forever.
 
 ## What it does
 

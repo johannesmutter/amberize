@@ -40,8 +40,17 @@ fly deploy -r fra
 
 ### Subsequent deploys
 
+From the repo root, run the deploy script. It fetches the latest download stats from GitHub and then deploys:
+
 ```bash
-fly deploy -a amberize
+./scripts/deploy_landing.sh
+```
+
+Or manually:
+
+```bash
+python3 scripts/fetch_download_stats.py
+cd apps/landing && fly deploy
 ```
 
 ### Useful commands

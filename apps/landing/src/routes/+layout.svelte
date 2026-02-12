@@ -25,6 +25,35 @@
   }
 </script>
 
+<svelte:head>
+  <meta name="description" content="Kostenlose Open-Source-Desktop-App für GoBD-konforme E-Mail-Archivierung. IMAP-E-Mails lokal archivieren mit manipulationssicherem Prüfpfad. Für macOS, Windows und Linux." />
+  <meta name="author" content="Johannes Mutter" />
+  <meta name="robots" content="index, follow" />
+  <link rel="canonical" href="https://amberize.fly.dev/" />
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Amberize" />
+  <meta property="og:title" content="Amberize — Ihre E-Mails, sicher archiviert für die nächste Betriebsprüfung" />
+  <meta property="og:description" content="Kostenlose Open-Source-App für GoBD-konforme E-Mail-Archivierung. Durchsuchbar, manipulationssicher, prüfungsbereit. Keine Cloud. Kein Abo. Für macOS, Windows und Linux." />
+  <meta property="og:url" content="https://amberize.fly.dev/" />
+  <meta property="og:image" content="https://amberize.fly.dev/images/cover.png" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="Amberize — Lokale E-Mail-Archivierung für GoBD" />
+  <meta property="og:locale" content="de_DE" />
+  <meta property="og:locale:alternate" content="en_US" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:site" content="@johannesmutter" />
+  <meta name="twitter:creator" content="@johannesmutter" />
+  <meta name="twitter:title" content="Amberize — Ihre E-Mails, sicher archiviert für die nächste Betriebsprüfung" />
+  <meta name="twitter:description" content="Kostenlose Open-Source-App für GoBD-konforme E-Mail-Archivierung. Durchsuchbar, manipulationssicher, prüfungsbereit. Keine Cloud. Kein Abo." />
+  <meta name="twitter:image" content="https://amberize.fly.dev/images/cover.png" />
+  <meta name="twitter:image:alt" content="Amberize — Lokale E-Mail-Archivierung für GoBD" />
+</svelte:head>
+
 <div class="site" lang={app.locale}>
   <!-- Nav -->
   <nav class="nav">

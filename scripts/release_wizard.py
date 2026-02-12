@@ -271,6 +271,8 @@ def print_next_steps(target_version: str) -> None:
         "     https://github.com/johannesmutter/amberize/releases/latest/download/latest.json"
     )
     print("  4) Run scripts/release_verify.py for post-release verification.")
+    print("  5) Refresh download stats and redeploy the landing page:")
+    print("     ./scripts/deploy_landing.sh")
 
 
 def main() -> int:

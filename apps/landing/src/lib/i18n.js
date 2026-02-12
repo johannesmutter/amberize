@@ -30,6 +30,8 @@ export const translations = {
     hero_sub: 'Amberize saves your business emails to {device} \u2014 searchable, tamper-proof, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.',
     hero_cta_download: 'Download for {os_name}',
     hero_cta_how: 'See how it works',
+    mac_apple_silicon: 'Apple Silicon (M1\u2013M4)',
+    mac_intel: 'Intel Mac',
 
     // Trust
     trust: 'Built for freelancers, small businesses, and tax advisors in Germany. Open source and free forever.',
@@ -97,6 +99,7 @@ export const translations = {
     cta_sub: 'Download Amberize, connect your email, and have one less thing to worry about when the Finanzamt calls.',
     cta_button: 'Download for {os_name}',
     cta_note: 'Free and open source. No account needed.',
+    cta_downloads: '{count}+ downloads',
 
     // Footer
     footer_text: 'Amberize is free, open-source software (MIT license).',
@@ -118,6 +121,8 @@ export const translations = {
     hero_sub: 'Amberize speichert Ihre gesch\u00e4ftlichen E-Mails auf {device} \u2014 durchsuchbar, manipulationssicher und bereit, wenn das Finanzamt fragt. Keine Cloud. Kein Abo. Keine IT-Abteilung n\u00f6tig.',
     hero_cta_download: 'F\u00fcr {os_name} herunterladen',
     hero_cta_how: 'So funktioniert es',
+    mac_apple_silicon: 'Apple Silicon (M1\u2013M4)',
+    mac_intel: 'Intel Mac',
 
     // Trust
     trust: 'Entwickelt f\u00fcr Freiberufler, kleine Unternehmen und Steuerberater in Deutschland. Open Source und dauerhaft kostenlos.',
@@ -185,6 +190,7 @@ export const translations = {
     cta_sub: 'Laden Sie Amberize herunter, verbinden Sie Ihr E-Mail-Konto und haben Sie eine Sorge weniger, wenn das Finanzamt anruft.',
     cta_button: 'F\u00fcr {os_name} herunterladen',
     cta_note: 'Kostenlos und Open Source. Kein Konto n\u00f6tig.',
+    cta_downloads: '{count}+ Downloads',
 
     // Footer
     footer_text: 'Amberize ist kostenlose Open-Source-Software (MIT-Lizenz).',
