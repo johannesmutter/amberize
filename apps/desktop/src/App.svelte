@@ -165,6 +165,7 @@
       // The app will restart automatically after install.
     } catch (err) {
       update_message = err instanceof Error ? err.message : String(err);
+      console.error('Failed to install update:', err);
     } finally {
       update_installing = false;
     }
@@ -396,9 +397,10 @@
 
 {#if available_update}
   <div class="update-banner">
-    <span class="update-banner-text">
-      Update available: v{available_update.version}
-    </span>
+    <span class="update-banner-text">Update available: v{available_update.version}</span>
+    {#if update_message}
+      <span class="update-banner-text">- {update_message}</span>
+    {/if}
     <button type="button" class="update-banner-action" onclick={handle_install_update} disabled={update_installing}>
       {update_installing ? 'Installing…' : 'Install & Restart'}
     </button>
