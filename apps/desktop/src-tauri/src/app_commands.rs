@@ -211,12 +211,13 @@ pub struct UiAttachment {
     pub size: usize,
     pub is_inline: bool,
     /// For inline images referenced by CID, a data URI so the HTML body can
-    /// render them directly. Only populated for images under 5 MB.
+    /// render them directly. Only populated for images within configured size caps.
     pub content_id: Option<String>,
     pub data_uri: Option<String>,
 }
 
-const INLINE_IMAGE_SIZE_LIMIT: usize = 5 * 1024 * 1024;
+const INLINE_IMAGE_SIZE_LIMIT: usize = 2 * 1024 * 1024;
+const INLINE_IMAGE_TOTAL_SIZE_LIMIT: usize = 6 * 1024 * 1024;
 
 /// Parse raw MIME bytes into a structured message detail for the UI.
 fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail {
@@ -249,6 +250,8 @@ fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail 
     // Collect inline images first so we can resolve CID references in HTML.
     let mut attachments: Vec<UiAttachment> = Vec::new();
     let mut cid_map: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+    let mut inline_image_bytes_used: usize = 0;
 
     for part in message.parts.iter() {
         let content_type_raw = part.content_type();
@@ -283,13 +286,18 @@ fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail 
         let body = part.contents();
         let size = body.len();
 
-        let data_uri = if is_inline && ct.starts_with("image/") && size <= INLINE_IMAGE_SIZE_LIMIT {
+        let data_uri = if is_inline
+            && ct.starts_with("image/")
+            && size <= INLINE_IMAGE_SIZE_LIMIT
+            && inline_image_bytes_used + size <= INLINE_IMAGE_TOTAL_SIZE_LIMIT
+        {
             let b64 = base64::engine::general_purpose::STANDARD.encode(body);
             let uri = format!("data:{};base64,{}", ct, b64);
             // Map CID → data URI for HTML replacement.
             if let Some(ref cid) = content_id {
                 cid_map.insert(cid.clone(), uri.clone());
             }
+            inline_image_bytes_used += size;
             Some(uri)
         } else {
             None

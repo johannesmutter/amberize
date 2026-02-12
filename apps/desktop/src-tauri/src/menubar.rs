@@ -288,6 +288,7 @@ pub fn on_main_window_close(window: &tauri::Window<Wry>, event: &WindowEvent) {
 
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
+        let _ = window.app_handle().emit("main_window_hidden", ());
         let _ = window.hide();
 
         #[cfg(target_os = "macos")]

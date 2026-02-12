@@ -12,11 +12,12 @@
   const CURRENT_YEAR = new Date().getFullYear();
   const LAST_YEAR = CURRENT_YEAR - 1;
   const MS_PER_DAY = 24 * 60 * 60 * 1000;
-  const MESSAGE_PAGE_SIZE = 200;
+  const MESSAGE_PAGE_SIZE = 100;
   const SEARCH_PAGE_SIZE = 50;
   const MIN_SEARCH_QUERY_LEN = 2;
   const FAST_SEARCH_RESULT_LIMIT = 50;
   const SEARCH_DEBOUNCE_MS = 400;
+  const MAX_IN_MEMORY_MESSAGES = 500;
 
   // Accounts
   /** @type {any[]} */
@@ -85,6 +86,12 @@
   let search_input_element = $state(null);
   let search_debounce_timeout = null;
 
+  function clear_preview_state() {
+    selected_message_id = null;
+    selected_message = null;
+    message_loading = false;
+  }
+
   // Load accounts, sync status, and archive stats on mount.
   $effect(() => {
     untrack(() => {
@@ -114,6 +121,7 @@
     let unlisten_sync_status = null;
     let unlisten_export_eml = null;
     let unlisten_sync_progress = null;
+    let unlisten_main_window_hidden = null;
 
     void (async () => {
       try {
@@ -141,12 +149,33 @@
       } catch {
         // ignore when not running inside Tauri
       }
+      try {
+        unlisten_main_window_hidden = await tauri_listen('main_window_hidden', () => {
+          clear_preview_state();
+        });
+      } catch {
+        // ignore when not running inside Tauri
+      }
     })();
 
     return () => {
       unlisten_sync_status?.();
       unlisten_export_eml?.();
       unlisten_sync_progress?.();
+      unlisten_main_window_hidden?.();
+    };
+  });
+
+  // Drop heavy preview payloads when the webview is hidden/backgrounded.
+  $effect(() => {
+    const on_visibility_change = () => {
+      if (!document.hidden) return;
+      clear_preview_state();
+    };
+
+    document.addEventListener('visibilitychange', on_visibility_change);
+    return () => {
+      document.removeEventListener('visibilitychange', on_visibility_change);
     };
   });
 
@@ -373,7 +402,11 @@
       // Deduplicate by message_blob_id to prevent duplicates from pagination overlap.
       const existing_ids = new Set(messages.map(m => m.message_blob_id));
       const unique_results = results.filter(m => !existing_ids.has(m.message_blob_id));
-      messages = [...messages, ...unique_results];
+      const next_messages = [...messages, ...unique_results];
+      // Keep a bounded message window to reduce long-session memory growth.
+      messages = next_messages.length > MAX_IN_MEMORY_MESSAGES
+        ? next_messages.slice(next_messages.length - MAX_IN_MEMORY_MESSAGES)
+        : next_messages;
       message_list_offset = offset + fetched_count;
       if (is_searching && !has_advanced_filters) {
         // Backend search endpoint is capped to 50 rows, so there is no

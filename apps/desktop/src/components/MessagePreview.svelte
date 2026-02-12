@@ -203,15 +203,34 @@ ${csp_tag}
     };
   });
 
-  /** Maximum data URI size to render (2 MB). Larger images are treated as file attachments. */
+  /** Maximum decoded data URI size to render (2 MB). */
   const MAX_DATA_URI_RENDER_SIZE = 2 * 1024 * 1024;
+
+  /**
+   * Estimate decoded byte length of a base64 data URI.
+   * @param {string} data_uri
+   * @returns {number}
+   */
+  function get_data_uri_decoded_size(data_uri) {
+    const comma_index = data_uri.indexOf(',');
+    if (comma_index < 0) return Number.POSITIVE_INFINITY;
+    const base64_payload = data_uri.slice(comma_index + 1).trim();
+    if (!base64_payload) return 0;
+
+    const padding_chars = base64_payload.endsWith('==')
+      ? 2
+      : base64_payload.endsWith('=')
+        ? 1
+        : 0;
+    return Math.floor((base64_payload.length * 3) / 4) - padding_chars;
+  }
 
   /** Inline images with data URIs that aren't CID-referenced in the HTML body. */
   let standalone_images = $derived(
     (message?.attachments ?? []).filter(a => {
       if (!a.data_uri) return false;
       // Reject data URIs that exceed the size limit to prevent memory issues.
-      if (a.data_uri.length > MAX_DATA_URI_RENDER_SIZE) return false;
+      if (get_data_uri_decoded_size(a.data_uri) > MAX_DATA_URI_RENDER_SIZE) return false;
       // If CID is referenced in HTML, it's already embedded — skip.
       if (a.content_id && render_html && message.body_html.includes(`cid:${a.content_id}`)) return false;
       return true;
