@@ -180,7 +180,7 @@
     font-size: var(--text-sm);
     font-weight: 600;
     text-decoration: none;
-    transition: background 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    transition: background 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
   }
   :global(.btn-primary) {
     background: var(--color-amber);
@@ -189,11 +189,9 @@
   }
   :global(.btn-primary:hover) {
     background: var(--color-amber-hover);
-    transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(180, 83, 9, 0.2), 0 2px 4px rgba(0, 0, 0, 0.06);
   }
   :global(.btn-primary:active) {
-    transform: translateY(0);
     box-shadow: 0 1px 2px rgba(180, 83, 9, 0.2);
   }
   :global(.btn-secondary) {
@@ -204,11 +202,9 @@
   }
   :global(.btn-secondary:hover) {
     border-color: #ccc;
-    transform: translateY(-1px);
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   }
   :global(.btn-secondary:active) {
-    transform: translateY(0);
     box-shadow: none;
   }
 
@@ -267,11 +263,10 @@
     padding: 0.4rem 1rem;
     border-radius: 6px;
     font-weight: 600;
-    transition: background 0.2s ease, transform 0.2s ease;
+    transition: background 0.2s ease;
   }
   .nav-cta:hover {
     background: var(--color-amber-hover) !important;
-    transform: translateY(-1px);
   }
   .lang-toggle {
     background: none;

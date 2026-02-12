@@ -20,25 +20,24 @@
     return `${GITHUB_URL}/releases/download/v${VERSION}/${filename}`;
   }
 
-  /** @type {Record<string, string>} OS → primary installer filename */
+  /** @type {Record<string, string>} Installer filenames keyed by platform */
   const DOWNLOAD_FILES = {
-    mac_arm:  `Amberize_${VERSION}_aarch64.dmg`,
-    mac_x64:  `Amberize_${VERSION}_x64.dmg`,
-    windows:  `Amberize_${VERSION}_x64_en-US.msi`,
-    linux:    `Amberize_${VERSION}_amd64.deb`,
+    mac_arm:        `Amberize_${VERSION}_aarch64.dmg`,
+    mac_x64:        `Amberize_${VERSION}_x64.dmg`,
+    windows:        `Amberize_${VERSION}_x64_en-US.msi`,
+    linux_deb:      `Amberize_${VERSION}_amd64.deb`,
+    linux_appimage: `Amberize_${VERSION}_amd64.AppImage`,
   };
-
-  let mac_dropdown_open = $state(false);
 
   /**
    * Primary download URL based on detected OS.
-   * For macOS defaults to Apple Silicon (aarch64).
+   * macOS defaults to Apple Silicon (aarch64).
    * @returns {string}
    */
   let primary_download_url = $derived(
     app.os === 'mac'     ? asset_url(DOWNLOAD_FILES.mac_arm)
     : app.os === 'windows' ? asset_url(DOWNLOAD_FILES.windows)
-    : asset_url(DOWNLOAD_FILES.linux)
+    : asset_url(DOWNLOAD_FILES.linux_deb)
   );
 
   let s = $derived(translations[app.locale]);
@@ -106,53 +105,57 @@
     return raw.split('\n');
   }
 
-  /** Close the macOS dropdown when clicking outside. */
-  function handle_click_outside() {
-    mac_dropdown_open = false;
-  }
+  /** Counter to generate unique popover IDs when the snippet is rendered multiple times. */
+  let popover_id_counter = 0;
 </script>
 
 {#snippet download_button(button_class)}
-  {#if app.os === 'mac'}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="download-split"
-      onmouseleave={() => mac_dropdown_open = false}
-    >
-      <a href={primary_download_url} class="btn {button_class} download-main" rel="noopener">
-        {tr('hero_cta_download')}
-      </a>
-      <button
-        class="btn {button_class} download-chevron"
-        aria-label="Choose macOS architecture"
-        aria-expanded={mac_dropdown_open}
-        onclick={(e) => { e.stopPropagation(); mac_dropdown_open = !mac_dropdown_open; }}
-      >
-        <svg width="10" height="6" viewBox="0 0 10 6" fill="none" aria-hidden="true">
-          <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </button>
-      {#if mac_dropdown_open}
-        <div class="download-dropdown" role="menu">
-          <a href={asset_url(DOWNLOAD_FILES.mac_arm)} class="download-option" role="menuitem" rel="noopener">
-            {tr('mac_apple_silicon')}
-          </a>
-          <a href={asset_url(DOWNLOAD_FILES.mac_x64)} class="download-option" role="menuitem" rel="noopener">
-            {tr('mac_intel')}
-          </a>
-        </div>
-      {/if}
-    </div>
-  {:else}
-    <a href={primary_download_url} class="btn {button_class}" rel="noopener">
+  {@const popover_id = `dl-popover-${popover_id_counter++}`}
+  <div class="download-split">
+    <a href={primary_download_url} class="btn {button_class} download-main" rel="noopener">
       {tr('hero_cta_download')}
     </a>
-  {/if}
+    <button
+      class="btn {button_class} download-chevron"
+      popovertarget={popover_id}
+      aria-label="Choose download"
+      style="anchor-name: --{popover_id}"
+    >
+      <svg width="10" height="6" viewBox="0 0 10 6" fill="none" aria-hidden="true">
+        <path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+    <div
+      id={popover_id}
+      class="download-dropdown"
+      popover="auto"
+      role="menu"
+      style="position-anchor: --{popover_id}"
+    >
+      <a href={asset_url(DOWNLOAD_FILES.mac_arm)} class="download-option" role="menuitem" rel="noopener">
+        {tr('mac_apple_silicon')}
+      </a>
+      <a href={asset_url(DOWNLOAD_FILES.mac_x64)} class="download-option" role="menuitem" rel="noopener">
+        {tr('mac_intel')}
+      </a>
+      <a href={asset_url(DOWNLOAD_FILES.windows)} class="download-option" role="menuitem" rel="noopener">
+        {tr('download_windows')}
+      </a>
+      <a href={asset_url(DOWNLOAD_FILES.linux_deb)} class="download-option" role="menuitem" rel="noopener">
+        {tr('download_linux_deb')}
+      </a>
+      <a href={asset_url(DOWNLOAD_FILES.linux_appimage)} class="download-option" role="menuitem" rel="noopener">
+        {tr('download_linux_appimage')}
+      </a>
+      <a href={RELEASES_URL} class="download-option download-all" role="menuitem" target="_blank" rel="noopener">
+        {tr('download_all')} ↗
+      </a>
+    </div>
+  </div>
 {/snippet}
 
 <!-- Hero -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<section class="hero" use:reveal onclick={handle_click_outside}>
+<section class="hero" use:reveal>
   <p class="hero-eyebrow">{tr('hero_eyebrow')}</p>
   <h1>
     {#each title_lines(tr('hero_title')) as line, i}
@@ -284,8 +287,7 @@
 </section>
 
 <!-- CTA -->
-<!-- svelte-ignore a11y_no_static_element_interactions -->
-<section class="cta" use:reveal onclick={handle_click_outside}>
+<section class="cta" use:reveal>
   <h2>{tr('cta_title')}</h2>
   <p>{tr('cta_sub')}</p>
   <div class="hero-actions">
@@ -336,7 +338,6 @@
 
   /* ───── Download split button ───── */
   .download-split {
-    position: relative;
     display: inline-flex;
   }
   .download-main {
@@ -347,32 +348,42 @@
   .download-chevron {
     border-top-left-radius: 0;
     border-bottom-left-radius: 0;
-    border-left: 1px solid rgba(255, 255, 255, 0.25);
+    margin-left: 1px;
     padding: 0.75rem 0.65rem;
     display: inline-flex;
     align-items: center;
     cursor: pointer;
+    border: none;
   }
+
+  /* ── Popover dropdown ── */
   .download-dropdown {
-    position: absolute;
-    top: calc(100% + 4px);
-    left: 0;
-    right: 0;
+    /* Anchor to the chevron button */
+    position: fixed;
+    position-area: bottom span-left;
+    position-try-fallbacks: flip-block;
+    margin-top: 6px;
+    width: max-content;
+
+    /* Reset popover defaults */
+    padding: 0;
     background: var(--color-surface);
     border: 1px solid var(--color-border);
     border-radius: 8px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 6px rgba(0, 0, 0, 0.06);
-    z-index: 10;
     overflow: hidden;
-    min-width: max-content;
+  }
+  .download-dropdown::backdrop {
+    background: transparent;
   }
   .download-option {
     display: block;
-    padding: 0.6rem 1rem;
-    font-size: var(--text-sm);
+    padding: 0.55rem 1rem;
+    font-size: var(--text-xs);
     font-weight: 500;
     color: var(--color-text);
     text-decoration: none;
+    white-space: nowrap;
     transition: background 0.15s ease, color 0.15s ease;
   }
   .download-option:hover {
@@ -381,6 +392,10 @@
   }
   .download-option + .download-option {
     border-top: 1px solid var(--color-border-light);
+  }
+  .download-all {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
   }
 
   /* ───── Platform note ───── */
@@ -628,12 +643,11 @@
     border: 1px solid #f0e5c8;
     border-radius: 10px;
     padding: 1.25rem 1.5rem;
-    transition: border-color 0.25s ease, box-shadow 0.25s ease, transform 0.25s ease;
+    transition: border-color 0.25s ease, box-shadow 0.25s ease;
   }
   .limitation-card:hover {
     border-color: #e5d5a0;
     box-shadow: 0 2px 12px rgba(180, 83, 9, 0.06);
-    transform: translateY(-1px);
   }
   .limitation-card h3 {
     color: #7c5e10;

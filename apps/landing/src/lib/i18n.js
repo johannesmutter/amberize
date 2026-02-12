@@ -30,8 +30,12 @@ export const translations = {
     hero_sub: 'Amberize saves your business emails to {device} \u2014 searchable, tamper-proof, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.',
     hero_cta_download: 'Download for {os_name}',
     hero_cta_how: 'See how it works',
-    mac_apple_silicon: 'Apple Silicon (M1\u2013M4)',
-    mac_intel: 'Intel Mac',
+    mac_apple_silicon: 'macOS — Apple Silicon (M1\u2013M4)',
+    mac_intel: 'macOS — Intel',
+    download_windows: 'Windows — Installer (.msi)',
+    download_linux_deb: 'Linux — Debian/Ubuntu (.deb)',
+    download_linux_appimage: 'Linux — AppImage',
+    download_all: 'All downloads',
 
     // Trust
     trust: 'Built for freelancers, small businesses, and tax advisors in Germany. Open source and free forever.',
@@ -121,8 +125,12 @@ export const translations = {
     hero_sub: 'Amberize speichert Ihre gesch\u00e4ftlichen E-Mails auf {device} \u2014 durchsuchbar, manipulationssicher und bereit, wenn das Finanzamt fragt. Keine Cloud. Kein Abo. Keine IT-Abteilung n\u00f6tig.',
     hero_cta_download: 'F\u00fcr {os_name} herunterladen',
     hero_cta_how: 'So funktioniert es',
-    mac_apple_silicon: 'Apple Silicon (M1\u2013M4)',
-    mac_intel: 'Intel Mac',
+    mac_apple_silicon: 'macOS \u2014 Apple Silicon (M1\u2013M4)',
+    mac_intel: 'macOS \u2014 Intel',
+    download_windows: 'Windows \u2014 Installer (.msi)',
+    download_linux_deb: 'Linux \u2014 Debian/Ubuntu (.deb)',
+    download_linux_appimage: 'Linux \u2014 AppImage',
+    download_all: 'Alle Downloads',
 
     // Trust
     trust: 'Entwickelt f\u00fcr Freiberufler, kleine Unternehmen und Steuerberater in Deutschland. Open Source und dauerhaft kostenlos.',
