@@ -4,6 +4,8 @@ Amberize is a free, open-source desktop app that archives your IMAP emails into 
 
 **One file. Fully searchable. Audit-ready.**
 
+**Website**: [amberize.fly.dev](https://amberize.fly.dev/)
+
 ## What it does
 
 - Connects to any IMAP account (password or Google OAuth: Gmail or Google Workspace)
