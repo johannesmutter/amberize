@@ -6,6 +6,11 @@ Amberize saves your business emails to your computer — searchable, tamper-proo
 
 Available for **macOS**, **Windows**, and **Linux**. Built for freelancers, small businesses, and tax advisors in Germany. Open source and free forever.
 
+## Download
+
+[Go to latest release to download for MacOS, Windows or Linux](https://github.com/johannesmutter/amberize/releases)
+
+
 ## What it does
 
 - Connects to any IMAP account (password or Google OAuth: Gmail or Google Workspace)
