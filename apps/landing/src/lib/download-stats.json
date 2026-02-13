@@ -1,14 +1,10 @@
 {
-  "total_downloads": 16,
-  "latest_version": "0.2.2",
+  "total_downloads": 0,
+  "latest_version": "0.2.3",
   "releases": [
     {
-      "tag": "v0.2.2",
+      "tag": "v0.2.3",
       "downloads": 0
-    },
-    {
-      "tag": "v0.2.1",
-      "downloads": 16
     }
   ]
 }

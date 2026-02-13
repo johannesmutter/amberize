@@ -52,6 +52,9 @@
   <meta name="twitter:description" content="Kostenlose Open-Source-App für GoBD-konforme E-Mail-Archivierung. Durchsuchbar, manipulationssicher, prüfungsbereit. Keine Cloud. Kein Abo." />
   <meta name="twitter:image" content="https://amberize.fly.dev/images/cover.png" />
   <meta name="twitter:image:alt" content="Amberize — Lokale E-Mail-Archivierung für GoBD" />
+
+  <!-- Google Site Verification -->
+  <meta name="google-site-verification" content="pHt2ytIR-0ae40UWNyZx3HFgQc2G7JYPky49ll9RB8U" />
 </svelte:head>
 
 <div class="site" lang={app.locale}>
