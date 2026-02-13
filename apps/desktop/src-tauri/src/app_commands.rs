@@ -7,8 +7,8 @@ use email_archiver_adapters::{
     sync_account_once_with_progress, KeychainSecretStore, SecretStore, SyncProgressFn,
 };
 use email_archiver_storage::{
-    CreateAccountInput, InsertEventInput, Storage, UpsertMailboxInput, AUTH_KIND_OAUTH2,
-    AUTH_KIND_PASSWORD, OAUTH_PROVIDER_GOOGLE, PROVIDER_KIND_CLASSIC_IMAP,
+    CreateAccountInput, InsertEventInput, MessageListSortOrder, Storage, UpsertMailboxInput,
+    AUTH_KIND_OAUTH2, AUTH_KIND_PASSWORD, OAUTH_PROVIDER_GOOGLE, PROVIDER_KIND_CLASSIC_IMAP,
     PROVIDER_KIND_GOOGLE_IMAP,
 };
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,8 @@ const DEFAULT_MANUAL_SYNC_ENABLED_INBOX: bool = true;
 
 const UI_SEARCH_LIMIT: usize = 50;
 const MAX_SEARCH_QUERY_LEN: usize = 1000;
+const MESSAGE_SORT_NEWEST: &str = "newest";
+const MESSAGE_SORT_OLDEST: &str = "oldest";
 
 const EVENT_KIND_MESSAGE_EML_EXPORTED: &str = "message_eml_exported";
 const EVENT_KIND_ACCOUNT_CREATED: &str = "account_created";
@@ -919,6 +921,7 @@ pub fn list_messages(
     query: String,
     limit: usize,
     offset: usize,
+    sort_order: Option<String>,
 ) -> Result<Vec<UiMessageRow>, String> {
     let db_path = validate_db_path(&db_path)?;
     if query.len() > MAX_SEARCH_QUERY_LEN {
@@ -926,9 +929,17 @@ pub fn list_messages(
             "search query too long (max {MAX_SEARCH_QUERY_LEN} characters)"
         ));
     }
+    let sort_order = normalize_message_sort_order(sort_order.as_deref())?;
     let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
     let rows = storage
-        .list_message_location_rows(account_id, mailbox_name.as_deref(), &query, limit, offset)
+        .list_message_location_rows_sorted(
+            account_id,
+            mailbox_name.as_deref(),
+            &query,
+            limit,
+            offset,
+            sort_order,
+        )
         .map_err(|e| e.to_string())?;
 
     Ok(rows
@@ -946,6 +957,21 @@ pub fn list_messages(
             mailbox_name: r.mailbox_name,
         })
         .collect())
+}
+
+fn normalize_message_sort_order(sort_order: Option<&str>) -> Result<MessageListSortOrder, String> {
+    let normalized = sort_order
+        .unwrap_or(MESSAGE_SORT_NEWEST)
+        .trim()
+        .to_ascii_lowercase();
+    match normalized.as_str() {
+        MESSAGE_SORT_NEWEST => Ok(MessageListSortOrder::NewestFirst),
+        MESSAGE_SORT_OLDEST => Ok(MessageListSortOrder::OldestFirst),
+        _ => Err(format!(
+            "sort_order must be '{}' or '{}'",
+            MESSAGE_SORT_NEWEST, MESSAGE_SORT_OLDEST
+        )),
+    }
 }
 
 #[tauri::command]

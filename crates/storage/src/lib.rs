@@ -629,11 +629,39 @@ impl Storage {
         limit: usize,
         offset: usize,
     ) -> StorageResult<Vec<MessageLocationListRow>> {
+        self.list_message_location_rows_sorted(
+            account_id,
+            mailbox_name,
+            user_query,
+            limit,
+            offset,
+            MessageListSortOrder::NewestFirst,
+        )
+    }
+
+    /// List message locations for the UI with explicit sort order.
+    pub fn list_message_location_rows_sorted(
+        &self,
+        account_id: Option<i64>,
+        mailbox_name: Option<&str>,
+        user_query: &str,
+        limit: usize,
+        offset: usize,
+        sort_order: MessageListSortOrder,
+    ) -> StorageResult<Vec<MessageLocationListRow>> {
         let conn = self.open_connection()?;
+        let order_by_clause = match sort_order {
+            MessageListSortOrder::NewestFirst => {
+                "coalesce(ml.internal_date, mb.date_header, mb.imported_at) DESC, ml.id DESC"
+            }
+            MessageListSortOrder::OldestFirst => {
+                "coalesce(ml.internal_date, mb.date_header, mb.imported_at) ASC, ml.id ASC"
+            }
+        };
 
         match build_fts5_query(user_query) {
             Some(fts_query) => {
-                let mut stmt = conn.prepare(
+                let query = format!(
                     r#"
               SELECT
                 ml.id,
@@ -656,10 +684,11 @@ impl Storage {
                 AND a.disabled = 0
                 AND (?2 IS NULL OR m.imap_name = ?2 COLLATE NOCASE)
                 AND (?3 IS NULL OR ml.account_id = ?3)
-              ORDER BY coalesce(ml.internal_date, mb.date_header, mb.imported_at) DESC, ml.id DESC
+              ORDER BY {order_by_clause}
               LIMIT ?4 OFFSET ?5
               "#,
-                )?;
+                );
+                let mut stmt = conn.prepare(&query)?;
 
                 let rows = stmt
                     .query_map(
@@ -690,7 +719,7 @@ impl Storage {
                 Ok(rows)
             }
             None => {
-                let mut stmt = conn.prepare(
+                let query = format!(
                     r#"
               SELECT
                 ml.id,
@@ -711,10 +740,11 @@ impl Storage {
                 AND a.disabled = 0
                 AND (?1 IS NULL OR m.imap_name = ?1 COLLATE NOCASE)
                 AND (?2 IS NULL OR ml.account_id = ?2)
-              ORDER BY coalesce(ml.internal_date, mb.date_header, mb.imported_at) DESC, ml.id DESC
+              ORDER BY {order_by_clause}
               LIMIT ?3 OFFSET ?4
               "#,
-                )?;
+                );
+                let mut stmt = conn.prepare(&query)?;
 
                 let rows = stmt
                     .query_map(
@@ -1657,6 +1687,12 @@ pub struct MessageLocationListRow {
     pub account_email_address: String,
     pub mailbox_id: i64,
     pub mailbox_name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MessageListSortOrder {
+    NewestFirst,
+    OldestFirst,
 }
 
 #[derive(Debug, Clone)]

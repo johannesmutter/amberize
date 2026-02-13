@@ -15,9 +15,10 @@
   const MESSAGE_PAGE_SIZE = 100;
   const SEARCH_PAGE_SIZE = 50;
   const MIN_SEARCH_QUERY_LEN = 2;
-  const FAST_SEARCH_RESULT_LIMIT = 50;
   const SEARCH_DEBOUNCE_MS = 400;
   const MAX_IN_MEMORY_MESSAGES = 500;
+  const MESSAGE_SORT_NEWEST = 'newest';
+  const MESSAGE_SORT_OLDEST = 'oldest';
 
   // Accounts
   /** @type {any[]} */
@@ -32,6 +33,7 @@
   /** @type {string} */
   let custom_range_end = $state('');
   let filter_attachments = $state(null);
+  let sort_order = $state(MESSAGE_SORT_NEWEST);
 
   // Messages
   /** @type {any[]} */
@@ -184,13 +186,10 @@
     };
   });
 
-  // Drop heavy preview payloads when the webview is hidden/backgrounded.
+  // Reload once when returning from a close-to-tray hide.
   $effect(() => {
     const on_visibility_change = () => {
-      if (document.hidden) {
-        clear_hidden_window_state();
-        return;
-      }
+      if (document.hidden) return;
       if (!hidden_state_needs_reload) return;
       hidden_state_needs_reload = false;
       void load_messages(true);
@@ -214,6 +213,7 @@
       custom_range_start,
       custom_range_end,
       filter_attachments,
+      sort_order,
     ];
     const should_load = !viewing_selection;
     if (should_load) {
@@ -355,9 +355,6 @@
     if (!message_list_has_more) return;
 
     const account_id = normalize_account_id(filter_account);
-    // Keep fast search path enabled unless a currently-supported filter requires
-    // the full listing query path.
-    const has_advanced_filters = account_id != null || !!filter_date;
     const offset = message_list_offset;
     const current_generation = message_list_generation;
     const page_size = is_searching ? SEARCH_PAGE_SIZE : MESSAGE_PAGE_SIZE;
@@ -369,41 +366,16 @@
         message_list_loading_more = true;
       }
 
-      let results = null;
-      let fetched_count = 0;
-
-      if (is_searching && !has_advanced_filters) {
-        const search_rows = await tauri_invoke('search_messages', {
-          dbPath: db_path,
-          query,
-        });
-        const limited = Array.isArray(search_rows)
-          ? search_rows.slice(offset, offset + FAST_SEARCH_RESULT_LIMIT)
-          : [];
-        fetched_count = limited.length;
-        results = limited.map((row) => ({
-          id: row.id,
-          message_blob_id: row.id,
-          subject: row.subject,
-          from_address: row.from_address,
-          date_header: row.date_header,
-          snippet: row.snippet,
-          account_id: 0,
-          account_email: '',
-          mailbox_id: 0,
-          mailbox_name: 'Search',
-        }));
-      } else {
-        results = await tauri_invoke('list_messages', {
-          dbPath: db_path,
-          accountId: account_id,
-          mailboxName: null,
-          query: query,
-          limit: page_size,
-          offset: offset,
-        });
-        fetched_count = Array.isArray(results) ? results.length : 0;
-      }
+      let results = await tauri_invoke('list_messages', {
+        dbPath: db_path,
+        accountId: account_id,
+        mailboxName: null,
+        query: query,
+        limit: page_size,
+        offset: offset,
+        sortOrder: sort_order,
+      });
+      const fetched_count = Array.isArray(results) ? results.length : 0;
 
       // Discard response if a newer request has been issued (race condition guard).
       if (current_generation !== message_list_generation) return;
@@ -431,13 +403,7 @@
         ? next_messages.slice(next_messages.length - MAX_IN_MEMORY_MESSAGES)
         : next_messages;
       message_list_offset = offset + fetched_count;
-      if (is_searching && !has_advanced_filters) {
-        // Backend search endpoint is capped to 50 rows, so there is no
-        // reliable pagination signal yet. Avoid redundant follow-up calls.
-        message_list_has_more = false;
-      } else {
-        message_list_has_more = fetched_count === page_size;
-      }
+      message_list_has_more = fetched_count === page_size;
     } catch (err) {
       console.error('load_messages failed:', err);
       if (reset) {
@@ -916,22 +882,34 @@
               <span class="bulk-mode-hint">Click messages to select</span>
             {/if}
           </div>
-          <div class="bulk-actions">
-            {#if viewing_selection}
-              <button type="button" class="bulk-button primary" onclick={export_bulk}>Export</button>
-              <button type="button" class="bulk-button" onclick={exit_selection_view}>Back</button>
-            {:else if selected_for_export.size > 0}
-              <button type="button" class="bulk-button primary" onclick={export_bulk}>Export</button>
-              <button type="button" class="bulk-button" onclick={clear_selection}>Clear</button>
-              <button type="button" class="bulk-button" onclick={toggle_bulk_mode}>Done</button>
-            {:else}
-              <button type="button" class="bulk-button" onclick={toggle_bulk_mode}>Done</button>
-            {/if}
+          <div class="bulk-header-right">
+            <div class="bulk-actions">
+              {#if viewing_selection}
+                <button type="button" class="bulk-button primary" onclick={export_bulk}>Export</button>
+                <button type="button" class="bulk-button" onclick={exit_selection_view}>Back</button>
+              {:else if selected_for_export.size > 0}
+                <button type="button" class="bulk-button primary" onclick={export_bulk}>Export</button>
+                <button type="button" class="bulk-button" onclick={clear_selection}>Clear</button>
+                <button type="button" class="bulk-button" onclick={toggle_bulk_mode}>Done</button>
+              {:else}
+                <button type="button" class="bulk-button" onclick={toggle_bulk_mode}>Done</button>
+              {/if}
+            </div>
+            <select class="sort-select" bind:value={sort_order} aria-label="Sort emails">
+              <option value={MESSAGE_SORT_NEWEST}>Newest first</option>
+              <option value={MESSAGE_SORT_OLDEST}>Oldest first</option>
+            </select>
           </div>
         {:else}
           <button type="button" class="mode-toggle" onclick={toggle_bulk_mode}>
             Select for export
           </button>
+          <div class="bulk-header-right">
+            <select class="sort-select" bind:value={sort_order} aria-label="Sort emails">
+              <option value={MESSAGE_SORT_NEWEST}>Newest first</option>
+              <option value={MESSAGE_SORT_OLDEST}>Oldest first</option>
+            </select>
+          </div>
         {/if}
       </div>
 
@@ -1287,6 +1265,34 @@
   .bulk-actions {
     display: flex;
     gap: var(--space-sm);
+  }
+
+  .bulk-header-right {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+  }
+
+  .sort-select {
+    padding: var(--space-xs) var(--space-sm);
+    padding-right: 24px;
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg);
+    color: var(--color-text-secondary);
+    font: inherit;
+    font-size: var(--font-size-xs);
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23666' d='M3 4.5L6 7.5L9 4.5'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+  }
+
+  .sort-select:focus {
+    outline: none;
+    border-color: var(--color-accent);
+    box-shadow: 0 0 0 3px var(--color-accent-soft);
   }
 
   .bulk-button {
