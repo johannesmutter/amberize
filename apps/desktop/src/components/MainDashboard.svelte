@@ -85,11 +85,29 @@
   let container_element = $state(null);
   let search_input_element = $state(null);
   let search_debounce_timeout = null;
+  let hidden_state_needs_reload = $state(false);
 
   function clear_preview_state() {
     selected_message_id = null;
     selected_message = null;
     message_loading = false;
+  }
+
+  function clear_hidden_window_state() {
+    clear_preview_state();
+
+    // Reset list-heavy state so hidden-to-tray mode does not retain large arrays.
+    messages = [];
+    selected_for_export = new Set();
+    viewing_selection = false;
+    bulk_mode = false;
+    message_list_offset = 0;
+    message_list_has_more = true;
+    message_list_pending_reset = false;
+    message_list_loading = false;
+    message_list_loading_more = false;
+    message_list_generation += 1;
+    hidden_state_needs_reload = true;
   }
 
   // Load accounts, sync status, and archive stats on mount.
@@ -151,7 +169,7 @@
       }
       try {
         unlisten_main_window_hidden = await tauri_listen('main_window_hidden', () => {
-          clear_preview_state();
+          clear_hidden_window_state();
         });
       } catch {
         // ignore when not running inside Tauri
@@ -169,8 +187,13 @@
   // Drop heavy preview payloads when the webview is hidden/backgrounded.
   $effect(() => {
     const on_visibility_change = () => {
-      if (!document.hidden) return;
-      clear_preview_state();
+      if (document.hidden) {
+        clear_hidden_window_state();
+        return;
+      }
+      if (!hidden_state_needs_reload) return;
+      hidden_state_needs_reload = false;
+      void load_messages(true);
     };
 
     document.addEventListener('visibilitychange', on_visibility_change);
