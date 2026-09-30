@@ -32,9 +32,10 @@ pub fn load(path: &Path) -> Result<(Option<AppConfig>, Option<String>), String> 
         Ok(config) => Ok((Some(config), None)),
         Err(error) => {
             if let Ok(config) = read_config(&backup_path(path)) {
+                eprintln!("Saved settings recovery: {error}");
                 return Ok((
                     Some(config),
-                    Some(format!("Recovered previous settings. {error}")),
+                    Some("Amberize restored your previous settings. Review your archive location and sync interval in Settings.".into()),
                 ));
             }
             if !path.try_exists().map_err(|e| e.to_string())?

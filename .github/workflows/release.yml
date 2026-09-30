@@ -165,3 +165,45 @@ jobs:
             )
             rm -rf "$extraction_dir/squashfs-root"
           done
+
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="target/${{ matrix.target }}/release/bundle/macos/Amberize.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Install release package and test native restart recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/amberize-qa"
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "${{ runner.os }}" = macOS ] && [ "$host" != "${{ matrix.target }}" ]; then
+            echo "Cross-compiled macOS package: signature checked; native execution requires matching hardware."
+            exit 0
+          fi
+          cargo run -p email_archiver_storage --release --target "${{ matrix.target }}" --example qa_fixture --locked -- create "$RUNNER_TEMP/amberize-qa/archive.sqlite3" 1024 > "$RUNNER_TEMP/amberize-qa/before.json"
+          if [ "${{ runner.os }}" = Linux ]; then
+            sudo apt-get install -y xvfb
+            sudo dpkg -i target/${{ matrix.target }}/release/bundle/deb/*.deb
+            binary=$(command -v Amberize || command -v amberize)
+            xvfb-run -a python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+          elif [ "${{ runner.os }}" = Windows ]; then
+            powershell -NoProfile -File scripts/install_windows_qa.ps1
+          else
+            python3 scripts/native_release_smoke.py --binary "$PWD/target/${{ matrix.target }}/release/bundle/macos/Amberize.app/Contents/MacOS/Amberize" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$HOME/Library/Application Support/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+          fi
+          cargo run -p email_archiver_storage --release --target "${{ matrix.target }}" --example qa_fixture --locked -- verify "$RUNNER_TEMP/amberize-qa/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/after.json"
+          python3 -c 'import json,os,pathlib; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"amberize-qa"; a=json.loads((p/"before.json").read_text()); b=json.loads((p/"after.json").read_text()); assert a["mime_hashes"] == b["mime_hashes"]; assert a["proof"]["message_blobs_count"] == b["proof"]["message_blobs_count"]; print("All synthetic MIME hashes and message counts preserved")'
+
+      - name: Upload native release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-qa-${{ matrix.target }}
+          path: ${{ runner.temp }}/amberize-qa/
+          if-no-files-found: warn

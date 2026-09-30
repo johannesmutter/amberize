@@ -46,7 +46,9 @@ pub type SyncProgressFn = Box<dyn Fn(&SyncProgress) + Send + Sync>;
 
 #[derive(Debug, Error)]
 pub enum SyncError {
-    #[error("missing secret for secret_ref '{secret_ref}'")]
+    #[error(
+        "The saved password is unavailable. Open Settings > Accounts and re-enter the password."
+    )]
     MissingSecret { secret_ref: String },
 
     #[error("secret store error: {0}")]

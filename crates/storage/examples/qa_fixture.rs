@@ -85,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hashes = Vec::new();
     storage.visit_raw_blobs(None, |blob| {
         assert_eq!(blob.sha256, hex::encode(Sha256::digest(&blob.raw_mime)));
-        hashes.push(blob.sha256);
+        hashes.push(blob.sha256.clone());
         Ok(())
     })?;
     hashes.sort();
