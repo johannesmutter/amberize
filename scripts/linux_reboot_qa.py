@@ -141,6 +141,7 @@ def main():
                "-serial", f"file:{evidence / 'serial.log'}"]
     prefix = ["ssh", "-i", str(key), "-p", "22223", "-o", "BatchMode=yes",
               "-o", "ConnectTimeout=5", "-o", "StrictHostKeyChecking=accept-new",
+              "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=2",
               "-o", f"UserKnownHostsFile={root / 'known-hosts'}", "qa@127.0.0.1"]
     report = {"passed": False, "actual_os_reboot": False, "platform": "Ubuntu 24.04 amd64",
               "accelerator": "kvm" if accelerated else "tcg", "package_sha256": args.package_sha256,
@@ -149,8 +150,14 @@ def main():
                                              "Synthetic data without real mailbox credentials"]}
     vm = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=(evidence / "qemu.log").open("wb"))
 
-    def ssh(script, timeout=120):
-        return subprocess.run(prefix + ["bash", "-se"], input=script, text=True, capture_output=True, timeout=timeout)
+    def ssh(script, timeout=30):
+        command = prefix + ["bash", "-se"]
+        try:
+            return subprocess.run(command, input=script, text=True, capture_output=True, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # SSH can connect to the outgoing guest and then stall while its
+            # kernel shuts down. Treat this as a transient unavailable guest.
+            return subprocess.CompletedProcess(command, 255, "", "Guest SSH unavailable during boot or reboot")
 
     def checkpoint():
         deadline = time.monotonic() + 600
@@ -171,6 +178,7 @@ def main():
             time.sleep(5)
         else:
             raise RuntimeError("Guest SSH did not become ready")
+        print("Disposable guest SSH ready", flush=True)
         for source, name in ((args.package, "candidate.deb"), (args.fixture_tool, "qa_fixture")):
             scp = ["scp", "-i", str(key), "-P", "22223", "-o", "BatchMode=yes",
                    "-o", f"UserKnownHostsFile={root / 'known-hosts'}", str(source), "qa@127.0.0.1:/home/qa/" + name]
@@ -178,9 +186,12 @@ def main():
         setup = ssh(GUEST_SETUP, timeout=1200)
         (evidence / "guest-setup.log").write_text(setup.stdout + setup.stderr)
         assert setup.returncode == 0, "Guest package/desktop setup failed"
+        print("Guest desktop and exact candidate package installed", flush=True)
         before = checkpoint()
         report["stages"].append(before)
-        ssh("sudo systemctl reboot", timeout=30)
+        print("First actual desktop login restored and verified all synthetic messages", flush=True)
+        reboot = ssh("sudo systemctl reboot", timeout=30)
+        assert reboot.returncode in (0, 255), "Guest reboot command rejected"
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
             attempt = ssh("cat /proc/sys/kernel/random/boot_id")
@@ -189,6 +200,7 @@ def main():
             time.sleep(5)
         else:
             raise RuntimeError("Guest kernel boot identity did not change")
+        print("Guest kernel boot identity changed after reboot", flush=True)
         after = checkpoint()
         assert after["boot_id"] != before["boot_id"] and after["app_started"] > before["app_started"]
         assert after["integrity_checks"] > before["integrity_checks"]
@@ -201,6 +213,7 @@ def main():
         (evidence / "after.json").write_text(verification.stdout)
         report["actual_os_reboot"] = True
         report["passed"] = True
+        print("Second desktop login restored and verified the same archive after OS reboot", flush=True)
     except BaseException as error:
         report["error"] = str(error)
         if vm.poll() is None:
