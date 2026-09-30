@@ -13,7 +13,7 @@
     { label: '6 hours', value: 6 * 60 * 60 },
   ];
   const DEFAULT_SYNC_INTERVAL_SECS = 5 * 60;
-  const LOCAL_STORAGE_KEY_SYNC_INTERVAL = 'sync_interval_secs';
+
 
   let autostart_enabled = $state(false);
   let autostart_loading = $state(true);
@@ -32,7 +32,8 @@
     autostart_loading = true;
     try {
       autostart_enabled = await tauri_invoke('autostart_is_enabled');
-    } catch {
+    } catch (err) {
+      error_message = String(err);
       autostart_enabled = false;
     } finally {
       autostart_loading = false;
@@ -40,24 +41,8 @@
   }
 
   async function load_sync_interval() {
-    // Read from localStorage first, then push to backend.
-    try {
-      const stored = localStorage.getItem(LOCAL_STORAGE_KEY_SYNC_INTERVAL);
-      if (stored) {
-        const parsed = parseInt(stored, 10);
-        if (!isNaN(parsed) && parsed >= 60) {
-          sync_interval_secs = parsed;
-        }
-      }
-    } catch {
-      // localStorage unavailable
-    }
-
-    try {
-      await tauri_invoke('set_sync_interval', { intervalSecs: sync_interval_secs });
-    } catch {
-      // ignore
-    }
+    try { sync_interval_secs = await tauri_invoke('get_sync_interval'); }
+    catch (err) { error_message = String(err); }
   }
 
   async function toggle_autostart() {
@@ -84,19 +69,9 @@
     const new_value = parseInt(/** @type {HTMLSelectElement} */ (event.target).value, 10);
     if (isNaN(new_value)) return;
 
-    sync_interval_secs = new_value;
-
-    try {
-      localStorage.setItem(LOCAL_STORAGE_KEY_SYNC_INTERVAL, String(new_value));
-    } catch {
-      // localStorage unavailable
-    }
-
-    try {
-      await tauri_invoke('set_sync_interval', { intervalSecs: new_value });
-    } catch (err) {
-      error_message = err instanceof Error ? err.message : String(err);
-    }
+    const previous = sync_interval_secs;
+    try { await tauri_invoke('set_sync_interval', {intervalSecs:new_value}); sync_interval_secs = new_value; }
+    catch (err) { sync_interval_secs = previous; event.target.value = String(previous); error_message = String(err); }
   }
 </script>
 
@@ -128,6 +103,7 @@
         </span>
       </div>
       <select
+        aria-label="Background sync interval"
         class="interval-select"
         value={sync_interval_secs}
         onchange={handle_sync_interval_change}
@@ -138,10 +114,7 @@
       </select>
     </div>
     <p class="sync-hint">
-      Set this to a shorter interval than your email client's check frequency.
-      For example, if Apple Mail checks every 5 minutes, set the archive
-      interval to 1 minute. This ensures emails are archived before they can
-      be read and deleted.
+      Shorter intervals reduce the time before new messages are archived. Messages deleted from the server between checks may never be captured.
     </p>
   </section>
 

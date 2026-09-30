@@ -41,6 +41,7 @@ From repo root:
    - Left sidebar → **Release**
    - Click the run for tag `vX.Y.Z`
 4. Wait for `.github/workflows/release.yml` to finish (all matrix jobs).
+   - The Linux job extracts each AppImage and checks that `.DirIcon` and the root desktop file resolve inside the package and that `AppRun` is executable. Do not publish if this check fails.
 5. Confirm the **draft** GitHub Release has assets:
    - GitHub repo → **Releases** → open `vX.Y.Z`
    - Assets should include installers and updater files, e.g.:
@@ -55,6 +56,12 @@ From repo root:
 2. Verify the updater endpoint resolves:
    - `https://github.com/johannesmutter/amberize/releases/latest/download/latest.json`
 3. Confirm `latest.json` references artifacts for the current version and includes signatures.
+
+### AppImage catalog retest
+
+The AppImage catalog reported a broken `.DirIcon` in `v0.2.3`: it linked to an absolute path on the GitHub build runner. Tauri CLI 2.11.4 fixes this by creating relative metadata links; keep the desktop CLI dependency at 2.11.4 or newer and commit its lockfile. See the [upstream fix](https://github.com/tauri-apps/tauri/pull/15596).
+
+After publishing a new release with the corrected AppImage, comment `/retest` on [AppImage catalog PR #8381](https://github.com/AppImage/appimage.github.io/pull/8381).
 
 ## Troubleshooting: Release exists but only has "Source code" assets
 

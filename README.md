@@ -1,6 +1,6 @@
 # Amberize — Your emails, safely archived for the next tax audit
 
-Amberize saves your business emails to your computer — searchable, tamper-proof, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.
+Amberize saves your business emails to your computer — searchable, tamper-evident, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.
 
 **Website**: [amberize.fly.dev](https://amberize.fly.dev/)
 
@@ -57,7 +57,7 @@ Amberize **supports** GoBD-compliant email archiving — it is **not** GoBD-comp
 
 | GoBD requirement | How Amberize addresses it |
 |---|---|
-| **Immutability** (Unveränderbarkeit) | Raw MIME bytes stored once, never modified. SHA-256 hashes verify integrity. Any tampering is detected. |
+| **Immutability** (Unveränderbarkeit) | Raw MIME bytes stored once, never modified. SHA-256 hashes verify integrity. Checks detect changes relative to stored hashes and checkpoints. A coordinated rewrite requires an external trusted snapshot to detect. |
 | **Completeness** (Vollständigkeit) | All messages in selected IMAP folders are archived automatically every few minutes. |
 | **Traceability** (Nachvollziehbarkeit) | Hash-chained audit trail records every sync, export, and configuration change. |
 | **Machine readability** (Maschinelle Auswertbarkeit) | Full-text search (FTS5). Export to `.eml` or auditor ZIP. |
@@ -76,7 +76,7 @@ Amberize **supports** GoBD-compliant email archiving — it is **not** GoBD-comp
 
 For sole proprietors (Einzelunternehmer), freelancers (Freiberufler), and small businesses using Amberize:
 
-1. Keep the default sync interval (15 min) or shorter
+1. Keep the default sync interval (5 min) or shorter
 2. Don't delete emails from your server before verifying they're in the archive
 3. Back up the archive file regularly (external drive, safe, or Steuerberater)
 4. Keep a copy of the auto-generated Verfahrensdokumentation alongside the archive

@@ -4,7 +4,7 @@ use email_archiver_adapters::{
     imap::{ImapConnectionSettings, Name},
     is_hard_excluded_by_common_name,
     oauth::{self, GoogleOAuthClientConfig},
-    sync_account_once_with_progress, KeychainSecretStore, SecretStore, SyncProgressFn,
+    sync_account_once_with_progress, KeychainSecretStore, SecretStore,
 };
 use email_archiver_storage::{
     CreateAccountInput, InsertEventInput, MessageListSortOrder, Storage, UpsertMailboxInput,
@@ -14,7 +14,7 @@ use email_archiver_storage::{
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use tauri_plugin_autostart::ManagerExt as AutostartManagerExt;
+use tauri_plugin_autostart::AutoLaunchManager;
 
 use crate::app_state::{AppState, UiSyncStatus};
 use crate::sync_status_text::format_last_sync_status_text;
@@ -31,11 +31,9 @@ const MESSAGE_SORT_NEWEST: &str = "newest";
 const MESSAGE_SORT_OLDEST: &str = "oldest";
 
 const EVENT_KIND_MESSAGE_EML_EXPORTED: &str = "message_eml_exported";
-const EVENT_KIND_ACCOUNT_CREATED: &str = "account_created";
 const EVENT_KIND_ACCOUNT_REMOVED: &str = "account_removed";
 const EVENT_KIND_MAILBOX_SYNC_CHANGED: &str = "mailbox_sync_changed";
 const EVENT_SYNC_STATUS_UPDATED: &str = "sync_status_updated";
-const EVENT_SYNC_PROGRESS: &str = "sync_progress";
 
 /// Google's IMAP SCOPES used in OAuth authorization.
 const GOOGLE_OAUTH_SCOPES: &str = "https://mail.google.com/ email";
@@ -172,6 +170,8 @@ pub struct UiSearchMessageRow {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UiMessageRow {
+    pub sort_timestamp: i64,
+    pub has_attachments: bool,
     pub id: i64,
     pub message_blob_id: i64,
     pub subject: Option<String>,
@@ -208,6 +208,7 @@ pub struct UiMessageDetail {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UiAttachment {
+    pub embedded_in_body: bool,
     pub filename: Option<String>,
     pub content_type: String,
     pub size: usize,
@@ -220,6 +221,63 @@ pub struct UiAttachment {
 
 const INLINE_IMAGE_SIZE_LIMIT: usize = 2 * 1024 * 1024;
 const INLINE_IMAGE_TOTAL_SIZE_LIMIT: usize = 6 * 1024 * 1024;
+
+/// Bound decoded image memory as well as compressed bytes.
+fn image_within_pixel_limit(bytes: &[u8]) -> bool {
+    let dimensions = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.len() >= 24 {
+        Some((
+            u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+            u32::from_be_bytes(bytes[20..24].try_into().unwrap()),
+        ))
+    } else if (bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a")) && bytes.len() >= 10 {
+        Some((
+            u16::from_le_bytes(bytes[6..8].try_into().unwrap()) as u32,
+            u16::from_le_bytes(bytes[8..10].try_into().unwrap()) as u32,
+        ))
+    } else if bytes.starts_with(b"\xff\xd8") {
+        let mut position = 2;
+        let mut dimensions = None;
+        while position + 4 <= bytes.len() {
+            if bytes[position] != 0xff {
+                break;
+            }
+            let marker = bytes[position + 1];
+            position += 2;
+            if marker == 0xff {
+                position -= 1;
+                continue;
+            }
+            if marker == 0xda || marker == 0xd9 {
+                break;
+            }
+            if marker == 0x01 || (0xd0..=0xd7).contains(&marker) {
+                continue;
+            }
+            let length =
+                u16::from_be_bytes(bytes[position..position + 2].try_into().unwrap()) as usize;
+            if length < 2 || position + length > bytes.len() {
+                break;
+            }
+            if matches!(marker,0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) && length >= 7
+            {
+                dimensions = Some((
+                    u16::from_be_bytes(bytes[position + 5..position + 7].try_into().unwrap())
+                        as u32,
+                    u16::from_be_bytes(bytes[position + 3..position + 5].try_into().unwrap())
+                        as u32,
+                ));
+                break;
+            }
+            position += length;
+        }
+        dimensions
+    } else {
+        None
+    };
+    dimensions.is_some_and(|(width, height)| {
+        width > 0 && height > 0 && u64::from(width) * u64::from(height) <= 4_000_000
+    })
+}
 
 /// Parse raw MIME bytes into a structured message detail for the UI.
 fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail {
@@ -290,6 +348,7 @@ fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail 
 
         let data_uri = if is_inline
             && ct.starts_with("image/")
+            && image_within_pixel_limit(body)
             && size <= INLINE_IMAGE_SIZE_LIMIT
             && inline_image_bytes_used + size <= INLINE_IMAGE_TOTAL_SIZE_LIMIT
         {
@@ -306,6 +365,7 @@ fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail 
         };
 
         attachments.push(UiAttachment {
+            embedded_in_body: false,
             filename,
             content_type: ct,
             size,
@@ -319,7 +379,23 @@ fn parse_mime_to_detail(id: i64, sha256: String, raw: &[u8]) -> UiMessageDetail 
     let body_html = message.body_html(0).map(|html| {
         let mut resolved = html.to_string();
         for (cid, data_uri) in &cid_map {
-            resolved = resolved.replace(&format!("cid:{}", cid), data_uri);
+            let needle = format!("cid:{}", cid);
+            if resolved.len().saturating_add(
+                resolved
+                    .matches(&needle)
+                    .count()
+                    .saturating_mul(data_uri.len()),
+            ) <= 10 * 1024 * 1024
+            {
+                let embedded = resolved.contains(&needle);
+                resolved = resolved.replace(&needle, data_uri);
+                for attachment in &mut attachments {
+                    if attachment.content_id.as_ref() == Some(cid) && embedded {
+                        attachment.embedded_in_body = true;
+                        attachment.data_uri = None;
+                    }
+                }
+            }
         }
         resolved
     });
@@ -357,28 +433,36 @@ fn format_address_list(address: &mail_parser::Address<'_>) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn get_message_detail(
+pub async fn get_message_detail(
     db_path: String,
     message_blob_id: i64,
 ) -> Result<UiMessageDetail, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let raw = storage
-        .get_message_blob_raw_mime(message_blob_id)
-        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let raw = storage
+            .get_message_blob_raw_mime(message_blob_id)
+            .map_err(|e| e.to_string())?;
 
-    Ok(parse_mime_to_detail(raw.id, raw.sha256, &raw.raw_mime))
+        Ok(parse_mime_to_detail(raw.id, raw.sha256, &raw.raw_mime))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn autostart_is_enabled(app_handle: AppHandle) -> Result<bool, String> {
-    let autostart_manager = app_handle.autolaunch();
+    let autostart_manager = app_handle
+        .try_state::<AutoLaunchManager>()
+        .ok_or("Launch at login is unavailable on this system")?;
     autostart_manager.is_enabled().map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn autostart_set_enabled(app_handle: AppHandle, enabled: bool) -> Result<(), String> {
-    let autostart_manager = app_handle.autolaunch();
+    let autostart_manager = app_handle
+        .try_state::<AutoLaunchManager>()
+        .ok_or("Launch at login is unavailable on this system")?;
     if enabled {
         autostart_manager.enable().map_err(|e| e.to_string())
     } else {
@@ -425,68 +509,51 @@ pub async fn create_account_and_discover_mailboxes(
 
     let secret_ref = format!("account:{}", uuid::Uuid::new_v4());
 
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
     let secret_store = KeychainSecretStore::new();
     secret_store
         .set_secret(&secret_ref, &input.password)
         .map_err(|e| e.to_string())?;
-
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-
-    let account_email = input.email_address.clone();
-    let account_imap_host = input.imap_host.clone();
-
-    let account_id = storage
-        .create_account(&CreateAccountInput {
+    let mailboxes = server_mailboxes
+        .into_iter()
+        .map(|mailbox| UpsertMailboxInput {
+            account_id: 0,
+            sync_enabled: default_sync_enabled_for_mailbox(
+                mailbox_selection_mode,
+                &mailbox.imap_name,
+                mailbox.hard_excluded,
+            ),
+            imap_name: mailbox.imap_name,
+            delimiter: mailbox.delimiter,
+            attributes: mailbox.attributes,
+            hard_excluded: mailbox.hard_excluded,
+            uidvalidity: None,
+            last_seen_uid: 0,
+        })
+        .collect::<Vec<_>>();
+    let account_id = match storage.create_account_with_mailboxes(
+        &CreateAccountInput {
             label: input.label,
             email_address: input.email_address,
-            provider_kind: PROVIDER_KIND_CLASSIC_IMAP.to_string(),
+            provider_kind: PROVIDER_KIND_CLASSIC_IMAP.into(),
             imap_host: input.imap_host,
             imap_port: input.imap_port,
             imap_tls: DEFAULT_IMAP_TLS,
             imap_username: input.imap_username,
-            auth_kind: AUTH_KIND_PASSWORD.to_string(),
-            secret_ref,
-            mailbox_selection_mode: mailbox_selection_mode.to_string(),
+            auth_kind: AUTH_KIND_PASSWORD.into(),
+            secret_ref: secret_ref.clone(),
+            mailbox_selection_mode: mailbox_selection_mode.into(),
             oauth_provider: None,
             oauth_scopes: None,
-        })
-        .map_err(|e| e.to_string())?;
-
-    for mailbox in server_mailboxes {
-        let hard_excluded = mailbox.hard_excluded;
-        let sync_enabled = default_sync_enabled_for_mailbox(
-            mailbox_selection_mode,
-            mailbox.imap_name.as_str(),
-            hard_excluded,
-        );
-
-        let _ = storage
-            .upsert_mailbox(&UpsertMailboxInput {
-                account_id,
-                imap_name: mailbox.imap_name,
-                delimiter: mailbox.delimiter,
-                attributes: mailbox.attributes,
-                sync_enabled,
-                hard_excluded,
-                uidvalidity: None,
-                last_seen_uid: 0,
-            })
-            .map_err(|e| e.to_string())?;
-    }
-
-    // Log account_created event in the audit chain.
-    let _ = storage.append_event(&InsertEventInput {
-        occurred_at: now_rfc3339(),
-        kind: EVENT_KIND_ACCOUNT_CREATED.to_string(),
-        account_id: Some(account_id),
-        mailbox_id: None,
-        message_blob_id: None,
-        detail: format!(
-            r#"{{"email":"{}","imap_host":"{}"}}"#,
-            escape_json_value(&account_email),
-            escape_json_value(&account_imap_host),
-        ),
-    });
+        },
+        &mailboxes,
+    ) {
+        Ok(id) => id,
+        Err(error) => {
+            let _ = secret_store.delete_secret(&secret_ref);
+            return Err(error.to_string());
+        }
+    };
 
     let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
     let account = accounts
@@ -503,18 +570,26 @@ pub async fn create_account_and_discover_mailboxes(
 }
 
 #[tauri::command]
-pub fn list_accounts(db_path: String) -> Result<Vec<UiAccount>, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
-    Ok(accounts.iter().map(map_ui_account).collect())
+pub async fn list_accounts(db_path: String) -> Result<Vec<UiAccount>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
+        Ok(accounts.iter().map(map_ui_account).collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn list_mailboxes(db_path: String, account_id: i64) -> Result<Vec<UiMailbox>, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    list_mailboxes_internal(&storage, account_id)
+pub async fn list_mailboxes(db_path: String, account_id: i64) -> Result<Vec<UiMailbox>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        list_mailboxes_internal(&storage, account_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -524,7 +599,7 @@ pub fn set_mailbox_sync_enabled(
     sync_enabled: bool,
 ) -> Result<(), String> {
     let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
 
     // Look up mailbox info for the audit event.
     let mailbox_info = storage.get_mailbox_by_id(mailbox_id).ok().flatten();
@@ -568,7 +643,7 @@ pub fn set_account_password(
         return Err("password is required".to_string());
     }
 
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
     let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
     let Some(account) = accounts.into_iter().find(|a| a.id == account_id) else {
         return Err("account not found".to_string());
@@ -602,44 +677,41 @@ pub fn set_account_password(
 }
 
 #[tauri::command]
-pub fn set_active_db_path(
+pub async fn set_active_db_path(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     db_path: String,
 ) -> Result<(), String> {
+    let _guard = state.sync_lock.lock().await;
     let validated = validate_db_path(&db_path)?;
-
-    {
-        let mut guard = state
-            .active_db_path
-            .lock()
-            .map_err(|_| "internal error: mutex poisoned".to_string())?;
-        *guard = Some(validated.to_string_lossy().to_string());
-    }
-
-    // Record app startup and detect any coverage gaps now that we know
-    // which database to use.
-    crate::background_sync::record_startup_and_detect_gaps(&app_handle);
-
-    // Run integrity verification against the event chain and root hash.
-    crate::background_sync::verify_integrity_at_startup(&app_handle);
-
-    let last = state
-        .last_sync
+    let canonical=validated.canonicalize().map_err(|e|format!("The saved archive is unavailable at {}: {e}. Reconnect its drive or choose the existing file.",validated.display()))?;
+    let already_active = state
+        .active_db_path
         .lock()
-        .map_err(|_| "internal error: mutex poisoned".to_string())?
-        .clone();
-    state.set_tray_status_text(&format!("Last sync: {}", last.last_sync_status));
-
-    let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
+        .map_err(|e| e.to_string())?
+        .as_deref()
+        == canonical.to_str();
+    let worker_app = app_handle.clone();
+    let path = canonical.to_string_lossy().into_owned();
+    tauri::async_runtime::spawn_blocking(move || crate::bootstrap::activate(&worker_app, &path))
+        .await
+        .map_err(|e| e.to_string())??;
+    state.sync_wakeup.notify_one();
+    if !already_active {
+        if let Ok(mut warning) = state.startup_warning.lock() {
+            *warning = None;
+        }
+        crate::bootstrap::verify_async(app_handle);
+    }
     Ok(())
 }
 
 #[tauri::command]
-pub fn clear_active_db_path(
+pub async fn clear_active_db_path(
     app_handle: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
+    let _sync_guard = state.sync_lock.lock().await;
     {
         let mut guard = state
             .active_db_path
@@ -647,17 +719,22 @@ pub fn clear_active_db_path(
             .map_err(|_| "internal error: mutex poisoned".to_string())?;
         *guard = None;
     }
+    *state.archive_lock.lock().map_err(|e| e.to_string())? = None;
+    *state.integrity_status.lock().map_err(|e| e.to_string())? = None;
 
     {
         let mut guard = state
             .last_sync
             .lock()
             .map_err(|_| "internal error: mutex poisoned".to_string())?;
-        *guard = UiSyncStatus {
+        let next = UiSyncStatus {
+            last_success_at: None,
+            error: None,
             sync_in_progress: false,
             last_sync_at: None,
             last_sync_status: "not configured".to_string(),
         };
+        *guard = next;
     }
 
     state.set_tray_status_text("Last sync: not configured");
@@ -686,14 +763,27 @@ pub fn get_sync_interval(state: State<'_, AppState>) -> Result<u64, String> {
 /// effect on the next sleep cycle — the currently running timer is not
 /// interrupted.
 #[tauri::command]
-pub fn set_sync_interval(state: State<'_, AppState>, interval_secs: u64) -> Result<(), String> {
+pub fn set_sync_interval(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
+    interval_secs: u64,
+) -> Result<(), String> {
     const MIN_INTERVAL_SECS: u64 = 60;
     if interval_secs < MIN_INTERVAL_SECS {
         return Err(format!(
             "interval must be at least {MIN_INTERVAL_SECS} seconds"
         ));
     }
-    state.set_sync_interval_secs(interval_secs);
+    if interval_secs > 86400 {
+        return Err("Interval must be at most one day".into());
+    }
+    if let Some(mut config) = get_app_config(app_handle.clone())? {
+        config.sync_interval_secs = interval_secs;
+        save_app_config(app_handle, config)?;
+    } else {
+        state.set_sync_interval_secs(interval_secs);
+    }
+    state.sync_wakeup.notify_one();
     Ok(())
 }
 
@@ -707,17 +797,27 @@ pub async fn sync_account_once_command(
     let db_path = validate_db_path(&db_path)?.to_string_lossy().to_string();
 
     let _guard = state.sync_lock.lock().await;
+    let active = state
+        .active_db_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    if !active
+        .as_ref()
+        .is_some_and(|active| same_file::is_same_file(active, &db_path).unwrap_or(false))
+    {
+        return Err(
+            "The active archive changed. Retry synchronization from the current archive.".into(),
+        );
+    }
     state.set_sync_in_progress(true);
     state.set_tray_status_text("Status: syncing…");
     let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
 
-    let progress_handle = app_handle.clone();
-    let on_progress: SyncProgressFn = Box::new(move |p| {
-        let _ = progress_handle.emit(EVENT_SYNC_PROGRESS, p);
-    });
+    let on_progress = crate::background_sync::progress_callback(app_handle.clone());
 
     let result = async {
-        let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
         let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
         let Some(account) = accounts.iter().find(|a| a.id == account_id) else {
             return Err("account not found".to_string());
@@ -740,13 +840,22 @@ pub async fn sync_account_once_command(
             };
             let status_text = format_last_sync_status_text(status, now.as_str());
             if let Ok(mut guard) = state.last_sync.lock() {
-                *guard = UiSyncStatus {
+                let mut next = UiSyncStatus {
+                    last_success_at: None,
+                    error: if summary.had_mailbox_errors {
+                        Some(summary.errors.join("; "))
+                    } else {
+                        None
+                    },
                     sync_in_progress: false,
                     last_sync_at: Some(now.clone()),
                     last_sync_status: status_text.clone(),
                 };
+                next.preserve_success(&guard);
+                *guard = next;
             }
             state.set_sync_in_progress(false);
+            crate::background_sync::persist_sync_status(&db_path, &state);
             state.set_tray_status_text(&format!("Last sync: {status_text}"));
             let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
 
@@ -761,13 +870,18 @@ pub async fn sync_account_once_command(
         Err(err) => {
             let status_text = format_last_sync_status_text("error", now.as_str());
             if let Ok(mut guard) = state.last_sync.lock() {
-                *guard = UiSyncStatus {
+                let mut next = UiSyncStatus {
+                    last_success_at: None,
+                    error: Some(err.clone()),
                     sync_in_progress: false,
                     last_sync_at: Some(now.clone()),
                     last_sync_status: status_text.clone(),
                 };
+                next.preserve_success(&guard);
+                *guard = next;
             }
             state.set_sync_in_progress(false);
+            crate::background_sync::persist_sync_status(&db_path, &state);
             state.set_tray_status_text(&format!("Last sync: {status_text}"));
             let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
             Err(err)
@@ -784,17 +898,27 @@ pub async fn sync_all_accounts_command(
     let db_path = validate_db_path(&db_path)?.to_string_lossy().to_string();
 
     let _guard = state.sync_lock.lock().await;
+    let active = state
+        .active_db_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .clone();
+    if !active
+        .as_ref()
+        .is_some_and(|active| same_file::is_same_file(active, &db_path).unwrap_or(false))
+    {
+        return Err(
+            "The active archive changed. Retry synchronization from the current archive.".into(),
+        );
+    }
     state.set_sync_in_progress(true);
     state.set_tray_status_text("Status: syncing…");
     let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
 
-    let progress_handle = app_handle.clone();
-    let on_progress: SyncProgressFn = Box::new(move |p| {
-        let _ = progress_handle.emit(EVENT_SYNC_PROGRESS, p);
-    });
+    let on_progress = crate::background_sync::progress_callback(app_handle.clone());
 
-    let result = async {
-        let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+    let result: Result<UiAggregateSyncSummary, String> = async {
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
         let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
         let secret_store = KeychainSecretStore::new();
 
@@ -831,6 +955,11 @@ pub async fn sync_all_accounts_command(
                     aggregate.messages_fetched_total += summary.messages_fetched;
                     aggregate.messages_ingested_total += summary.messages_ingested;
                     if summary.had_mailbox_errors {
+                        aggregate.errors.push(UiSyncError {
+                            account_id,
+                            email_address: email_address.clone(),
+                            message: summary.errors.join("; "),
+                        });
                         aggregate.accounts_with_errors += 1;
                     }
                 }
@@ -859,13 +988,18 @@ pub async fn sync_all_accounts_command(
             };
             let status_text = format_last_sync_status_text(status, now.as_str());
             if let Ok(mut guard) = state.last_sync.lock() {
-                *guard = UiSyncStatus {
+                let mut next = UiSyncStatus {
+                    last_success_at: None,
+                    error: aggregate.errors.first().map(|e| e.message.clone()),
                     sync_in_progress: false,
                     last_sync_at: Some(now.clone()),
                     last_sync_status: status_text.clone(),
                 };
+                next.preserve_success(&guard);
+                *guard = next;
             }
             state.set_sync_in_progress(false);
+            crate::background_sync::persist_sync_status(&db_path, &state);
             state.set_tray_status_text(&format!("Last sync: {status_text}"));
             let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
 
@@ -874,13 +1008,18 @@ pub async fn sync_all_accounts_command(
         Err(err) => {
             let status_text = format_last_sync_status_text("error", now.as_str());
             if let Ok(mut guard) = state.last_sync.lock() {
-                *guard = UiSyncStatus {
+                let mut next = UiSyncStatus {
+                    last_success_at: None,
+                    error: Some(err.clone()),
                     sync_in_progress: false,
                     last_sync_at: Some(now.clone()),
                     last_sync_status: status_text.clone(),
                 };
+                next.preserve_success(&guard);
+                *guard = next;
             }
             state.set_sync_in_progress(false);
+            crate::background_sync::persist_sync_status(&db_path, &state);
             state.set_tray_status_text(&format!("Last sync: {status_text}"));
             let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
             Err(err)
@@ -889,32 +1028,40 @@ pub async fn sync_all_accounts_command(
 }
 
 #[tauri::command]
-pub fn search_messages(db_path: String, query: String) -> Result<Vec<UiSearchMessageRow>, String> {
-    let db_path = validate_db_path(&db_path)?;
-    if query.len() > MAX_SEARCH_QUERY_LEN {
-        return Err(format!(
-            "search query too long (max {MAX_SEARCH_QUERY_LEN} characters)"
-        ));
-    }
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let results = storage
-        .search_message_blobs(&query, UI_SEARCH_LIMIT)
-        .map_err(|e| e.to_string())?;
+pub async fn search_messages(
+    db_path: String,
+    query: String,
+) -> Result<Vec<UiSearchMessageRow>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        if query.len() > MAX_SEARCH_QUERY_LEN {
+            return Err(format!(
+                "search query too long (max {MAX_SEARCH_QUERY_LEN} characters)"
+            ));
+        }
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let results = storage
+            .search_message_blobs(&query, UI_SEARCH_LIMIT)
+            .map_err(|e| e.to_string())?;
 
-    Ok(results
-        .into_iter()
-        .map(|r| UiSearchMessageRow {
-            id: r.id,
-            subject: r.subject,
-            from_address: r.from_address,
-            date_header: r.date_header,
-            snippet: r.snippet,
-        })
-        .collect())
+        Ok(results
+            .into_iter()
+            .map(|r| UiSearchMessageRow {
+                id: r.id,
+                subject: r.subject,
+                from_address: r.from_address,
+                date_header: r.date_header,
+                snippet: r.snippet,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn list_messages(
+#[allow(clippy::too_many_arguments)] // Keep existing flat IPC parameters compatible.
+pub async fn list_messages(
     db_path: String,
     account_id: Option<i64>,
     mailbox_name: Option<String>,
@@ -922,41 +1069,57 @@ pub fn list_messages(
     limit: usize,
     offset: usize,
     sort_order: Option<String>,
+    date_from: Option<i64>,
+    date_to: Option<i64>,
+    has_attachments: Option<bool>,
+    after: Option<email_archiver_storage::MessageCursor>,
+    before: Option<email_archiver_storage::MessageCursor>,
 ) -> Result<Vec<UiMessageRow>, String> {
-    let db_path = validate_db_path(&db_path)?;
-    if query.len() > MAX_SEARCH_QUERY_LEN {
-        return Err(format!(
-            "search query too long (max {MAX_SEARCH_QUERY_LEN} characters)"
-        ));
-    }
-    let sort_order = normalize_message_sort_order(sort_order.as_deref())?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let rows = storage
-        .list_message_location_rows_sorted(
-            account_id,
-            mailbox_name.as_deref(),
-            &query,
-            limit,
-            offset,
-            sort_order,
-        )
-        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        if query.len() > MAX_SEARCH_QUERY_LEN {
+            return Err(format!(
+                "search query too long (max {MAX_SEARCH_QUERY_LEN} characters)"
+            ));
+        }
+        let sort_order = normalize_message_sort_order(sort_order.as_deref())?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let rows = storage
+            .query_message_locations(&email_archiver_storage::MessageQuery {
+                account_id,
+                mailbox_name: mailbox_name.as_deref(),
+                user_query: &query,
+                limit,
+                offset,
+                sort_order,
+                date_from,
+                date_to,
+                has_attachments,
+                after,
+                before,
+            })
+            .map_err(|e| e.to_string())?;
 
-    Ok(rows
-        .into_iter()
-        .map(|r| UiMessageRow {
-            id: r.id,
-            message_blob_id: r.message_blob_id,
-            subject: r.subject,
-            from_address: r.from_address,
-            date_header: r.date_header,
-            snippet: r.snippet,
-            account_id: r.account_id,
-            account_email: r.account_email_address,
-            mailbox_id: r.mailbox_id,
-            mailbox_name: r.mailbox_name,
-        })
-        .collect())
+        Ok(rows
+            .into_iter()
+            .map(|r| UiMessageRow {
+                sort_timestamp: r.sort_timestamp,
+                has_attachments: r.has_attachments,
+                id: r.id,
+                message_blob_id: r.message_blob_id,
+                subject: r.subject,
+                from_address: r.from_address,
+                date_header: r.date_header,
+                snippet: r.snippet,
+                account_id: r.account_id,
+                account_email: r.account_email_address,
+                mailbox_id: r.mailbox_id,
+                mailbox_name: r.mailbox_name,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 fn normalize_message_sort_order(sort_order: Option<&str>) -> Result<MessageListSortOrder, String> {
@@ -975,55 +1138,66 @@ fn normalize_message_sort_order(sort_order: Option<&str>) -> Result<MessageListS
 }
 
 #[tauri::command]
-pub fn get_message_blob_raw_mime(
+pub async fn get_message_blob_raw_mime(
     db_path: String,
     message_blob_id: i64,
 ) -> Result<UiMessageBlobRaw, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let raw = storage
-        .get_message_blob_raw_mime(message_blob_id)
-        .map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let raw = storage
+            .get_message_blob_raw_mime(message_blob_id)
+            .map_err(|e| e.to_string())?;
 
-    Ok(UiMessageBlobRaw {
-        id: raw.id,
-        sha256: raw.sha256,
-        raw_mime_text: String::from_utf8_lossy(&raw.raw_mime).to_string(),
+        Ok(UiMessageBlobRaw {
+            id: raw.id,
+            sha256: raw.sha256,
+            raw_mime_text: String::from_utf8_lossy(&raw.raw_mime).to_string(),
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn export_message_blob_eml(
+pub async fn export_message_blob_eml(
     db_path: String,
     message_blob_id: i64,
     output_path: String,
 ) -> Result<(), String> {
-    let db_path = validate_db_path(&db_path)?;
-    let output_path = validate_output_path(&output_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let raw = storage
-        .get_message_blob_raw_mime(message_blob_id)
-        .map_err(|e| e.to_string())?;
-    create_parent_dir_if_needed(&output_path).map_err(|e| e.to_string())?;
-    std::fs::write(&output_path, raw.raw_mime).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let output_path = validate_output_path(&output_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let raw = storage
+            .get_message_blob_raw_mime(message_blob_id)
+            .map_err(|e| e.to_string())?;
+        create_parent_dir_if_needed(&output_path).map_err(|e| e.to_string())?;
+        crate::output::atomic_export(&db_path, &output_path, |file| {
+            use std::io::Write;
+            file.write_all(&raw.raw_mime).map_err(|e| e.to_string())
+        })?;
 
-    // Audit-relevant: export event (no path is recorded).
-    let _ = storage.append_event(&email_archiver_storage::InsertEventInput {
-        occurred_at: now_rfc3339(),
-        kind: EVENT_KIND_MESSAGE_EML_EXPORTED.to_string(),
-        account_id: None,
-        mailbox_id: None,
-        message_blob_id: Some(message_blob_id),
-        detail: r#"{"v":1}"#.to_string(),
-    });
+        // Audit-relevant: export event (no path is recorded).
+        let _ = storage.append_event(&email_archiver_storage::InsertEventInput {
+            occurred_at: now_rfc3339(),
+            kind: EVENT_KIND_MESSAGE_EML_EXPORTED.to_string(),
+            account_id: None,
+            mailbox_id: None,
+            message_blob_id: Some(message_blob_id),
+            detail: r#"{"v":1}"#.to_string(),
+        });
 
-    Ok(())
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn remove_account(db_path: String, account_id: i64) -> Result<(), String> {
     let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
 
     // Look up the account email for the audit event before disabling.
     let email = storage
@@ -1263,17 +1437,21 @@ fn validate_output_path(raw: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn diagnose_database(db_path: String) -> Result<serde_json::Value, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let diagnostic = storage.diagnose_database().map_err(|e| e.to_string())?;
-    serde_json::to_value(&diagnostic).map_err(|e| e.to_string())
+pub async fn diagnose_database(db_path: String) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let diagnostic = storage.diagnose_database().map_err(|e| e.to_string())?;
+        serde_json::to_value(&diagnostic).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 pub fn reset_mailbox_cursors(db_path: String, account_id: i64) -> Result<u64, String> {
     let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
     storage
         .reset_mailbox_cursors(account_id)
         .map_err(|e| e.to_string())
@@ -1288,94 +1466,83 @@ pub fn reset_mailbox_cursors(db_path: String, account_id: i64) -> Result<u64, St
 /// `limit`       – max rows (clamped to 500).
 /// `offset`      – pagination offset.
 #[tauri::command]
-pub fn list_events(
+pub async fn list_events(
     db_path: String,
     kind_filter: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<serde_json::Value, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
 
-    const MAX_LIMIT: usize = 500;
-    let limit = limit.unwrap_or(100).min(MAX_LIMIT);
-    let offset = offset.unwrap_or(0);
+        const MAX_LIMIT: usize = 500;
+        let limit = limit.unwrap_or(100).min(MAX_LIMIT);
+        let offset = offset.unwrap_or(0);
 
-    let total_count = storage
-        .event_count(kind_filter.as_deref())
-        .map_err(|e| e.to_string())?;
+        let total_count = storage
+            .event_count(kind_filter.as_deref())
+            .map_err(|e| e.to_string())?;
 
-    let events = storage
-        .list_recent_events(kind_filter.as_deref(), limit, offset)
-        .map_err(|e| e.to_string())?;
+        let events = storage
+            .list_recent_events(kind_filter.as_deref(), limit, offset)
+            .map_err(|e| e.to_string())?;
 
-    let result = serde_json::json!({
-        "events": events,
-        "total_count": total_count,
-    });
-    Ok(result)
+        let result = serde_json::json!({
+            "events": events,
+            "total_count": total_count,
+        });
+        Ok(result)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Export all events as a CSV file.  Returns the path to the generated file.
 #[tauri::command]
-pub fn export_events_csv(db_path: String, output_path: String) -> Result<String, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let output_path_validated = validate_output_path(&output_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
+pub async fn export_events_csv(db_path: String, output_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let output_path_validated = validate_output_path(&output_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
 
-    let total = storage.event_count(None).map_err(|e| e.to_string())?;
-
-    let mut file = std::fs::File::create(&output_path_validated)
-        .map_err(|e| format!("cannot create file: {e}"))?;
-
-    use std::io::Write;
-    writeln!(
-        file,
-        "id,occurred_at,kind,account_id,mailbox_id,message_blob_id,detail,hash"
-    )
-    .map_err(|e| e.to_string())?;
-
-    let page_size = 500;
-    let mut offset = 0usize;
-
-    while (offset as u64) < total {
-        let events = storage
-            .list_recent_events(None, page_size, offset)
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let snapshot = storage
+            .snapshot_to(&dir.path().join("snapshot.db"))
             .map_err(|e| e.to_string())?;
-
-        if events.is_empty() {
-            break;
-        }
-
-        for event in &events {
+        crate::output::atomic_export(&db_path, &output_path_validated, |file| {
+            use std::io::Write;
             writeln!(
                 file,
-                "{},{},{},{},{},{},{},{}",
-                event.id,
-                csv_escape(&event.occurred_at),
-                csv_escape(&event.kind),
-                event
-                    .account_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
-                event
-                    .mailbox_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
-                event
-                    .message_blob_id
-                    .map(|id| id.to_string())
-                    .unwrap_or_default(),
-                csv_escape(event.detail.as_deref().unwrap_or("")),
-                csv_escape(&event.hash),
+                "id,occurred_at,kind,account_id,mailbox_id,message_blob_id,detail,hash"
             )
             .map_err(|e| e.to_string())?;
-        }
+            snapshot
+                .visit_events_for_export(|event| {
+                    writeln!(
+                        file,
+                        "{},{},{},{},{},{},{},{}",
+                        event.id,
+                        csv_escape(&event.occurred_at),
+                        csv_escape(&event.kind),
+                        event.account_id.map(|v| v.to_string()).unwrap_or_default(),
+                        event.mailbox_id.map(|v| v.to_string()).unwrap_or_default(),
+                        event
+                            .message_blob_id
+                            .map(|v| v.to_string())
+                            .unwrap_or_default(),
+                        csv_escape(event.detail.as_deref().unwrap_or("")),
+                        csv_escape(&event.hash)
+                    )?;
+                    Ok(())
+                })
+                .map_err(|e| e.to_string())
+        })?;
 
-        offset += events.len();
-    }
-
-    Ok(output_path_validated.to_string_lossy().to_string())
+        Ok(output_path_validated.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Escape a value for CSV output (RFC 4180).
@@ -1527,149 +1694,162 @@ pub fn set_google_oauth_client(input: SetGoogleOAuthClientInput) -> Result<(), S
 /// 5. Creates the account and mailboxes in the database.
 #[tauri::command]
 pub async fn add_google_oauth_account(
+    app_handle: AppHandle,
+    state: State<'_, AppState>,
     db_path: String,
     input: AddGoogleOAuthAccountInput,
+    operation_id: String,
 ) -> Result<CreateAccountCommandResult, String> {
-    let db_path = validate_db_path(&db_path)?.to_string_lossy().to_string();
+    use crate::app_state::OAuthOperation;
+    uuid::Uuid::parse_str(&operation_id).map_err(|_| "Invalid authorization operation")?;
+    let db_path = validate_db_path(&db_path)?.to_string_lossy().into_owned();
     let email = input.email.trim().to_string();
     if email.is_empty() {
-        return Err("Email address is required".to_string());
+        return Err("Email address is required".into());
     }
-    let mailbox_selection_mode = normalize_mailbox_selection_mode(&input.mailbox_selection_mode)?;
-
-    let secret_store = KeychainSecretStore::new();
-
-    // Resolve Google OAuth client config (Keychain → embedded defaults).
-    let client_config = ensure_google_client_configured(&secret_store)?;
-
-    // Generate a unique secret_ref for this account's tokens.
-    let secret_ref = format!("account:{}", uuid::Uuid::new_v4());
-
-    // Run the OAuth authorization flow (opens browser, waits for callback).
-    // After this succeeds, tokens are stored in Keychain under `secret_ref`.
-    // If any subsequent step fails, we must clean up the orphaned Keychain
-    // entry to avoid accumulating leaked credentials.
-    let auth_result = oauth::google_authorize(&secret_store, &client_config, &email, &secret_ref)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    match create_google_account_after_auth(
-        &secret_store,
-        &db_path,
-        &email,
-        &auth_result.access_token,
-        &secret_ref,
-        mailbox_selection_mode,
-    )
-    .await
+    let mode = normalize_mailbox_selection_mode(&input.mailbox_selection_mode)?;
+    let (sender, mut cancellation) = tokio::sync::oneshot::channel();
     {
-        Ok(result) => Ok(result),
-        Err(e) => {
-            // Clean up the orphaned token data in Keychain so we don't
-            // leave credentials for an account that was never created.
-            oauth::delete_token_data(&secret_store, &secret_ref);
-            Err(e)
+        let mut operations = state.oauth_operations.lock().map_err(|e| e.to_string())?;
+        if operations.contains_key(&operation_id) {
+            return Err("Authorization was canceled or already started".into());
         }
+        if operations.len() > 512 {
+            operations.retain(|_, v| matches!(v, OAuthOperation::Running(_)));
+        }
+        operations.insert(operation_id.clone(), OAuthOperation::Running(sender));
     }
-}
-
-/// Inner helper for [`add_google_oauth_account`] that runs after the OAuth
-/// browser flow succeeds.  Separated so the caller can clean up the Keychain
-/// entry if this function fails.
-async fn create_google_account_after_auth(
-    _secret_store: &dyn email_archiver_adapters::SecretStore,
-    db_path: &str,
-    email: &str,
-    access_token: &str,
-    secret_ref: &str,
-    mailbox_selection_mode: &str,
-) -> Result<CreateAccountCommandResult, String> {
-    // Connect to Gmail IMAP with XOAUTH2 and discover mailboxes.
-    let mut session = email_archiver_adapters::imap::connect_and_authenticate_xoauth2(
-        oauth::GOOGLE_IMAP_HOST,
-        oauth::GOOGLE_IMAP_PORT,
-        email,
-        access_token,
-    )
-    .await
-    .map_err(|e| format!("Gmail IMAP connection failed: {e}"))?;
-
-    let names = email_archiver_adapters::imap::list_mailboxes(&mut session)
+    let secret_store = KeychainSecretStore::new();
+    let secret_ref = format!("account:{}", uuid::Uuid::new_v4());
+    let browser_operation = operation_id.clone();
+    let report_browser = move |url: &str, error: Option<&str>| {
+        let _ = app_handle.emit(
+            "google_oauth_browser",
+            serde_json::json!({"operation_id":browser_operation,"url":url,"launch_error":error}),
+        );
+    };
+    let flow = async {
+        let client = ensure_google_client_configured(&secret_store)?;
+        let auth = oauth::google_authorize(
+            &secret_store,
+            &client,
+            &email,
+            &secret_ref,
+            Some(&report_browser),
+        )
         .await
         .map_err(|e| e.to_string())?;
-
-    let server_mailboxes: Vec<DiscoveredMailbox> =
-        names.into_iter().map(map_discovered_mailbox).collect();
-
-    // Create the account in the database.
-    let storage = Storage::open_or_create(db_path).map_err(|e| e.to_string())?;
-
-    let account_id = storage
-        .create_account(&CreateAccountInput {
-            label: email.to_string(),
-            email_address: email.to_string(),
-            provider_kind: PROVIDER_KIND_GOOGLE_IMAP.to_string(),
-            imap_host: oauth::GOOGLE_IMAP_HOST.to_string(),
-            imap_port: oauth::GOOGLE_IMAP_PORT,
-            imap_tls: true,
-            imap_username: email.to_string(),
-            auth_kind: AUTH_KIND_OAUTH2.to_string(),
-            secret_ref: secret_ref.to_string(),
-            mailbox_selection_mode: mailbox_selection_mode.to_string(),
-            oauth_provider: Some(OAUTH_PROVIDER_GOOGLE.to_string()),
-            oauth_scopes: Some(GOOGLE_OAUTH_SCOPES.to_string()),
-        })
+        let mut session = email_archiver_adapters::imap::connect_and_authenticate_xoauth2(
+            oauth::GOOGLE_IMAP_HOST,
+            oauth::GOOGLE_IMAP_PORT,
+            &auth.email,
+            &auth.access_token,
+        )
+        .await
         .map_err(|e| e.to_string())?;
-
-    // Insert discovered mailboxes.
-    for mailbox in server_mailboxes {
-        let hard_excluded = mailbox.hard_excluded;
-        let sync_enabled = default_sync_enabled_for_mailbox(
-            mailbox_selection_mode,
-            mailbox.imap_name.as_str(),
-            hard_excluded,
-        );
-
-        let _ = storage
-            .upsert_mailbox(&UpsertMailboxInput {
-                account_id,
-                imap_name: mailbox.imap_name,
-                delimiter: mailbox.delimiter,
-                attributes: mailbox.attributes,
-                sync_enabled,
-                hard_excluded,
+        let names = email_archiver_adapters::imap::list_mailboxes(&mut session)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok::<_, String>((
+            auth,
+            names
+                .into_iter()
+                .map(map_discovered_mailbox)
+                .collect::<Vec<_>>(),
+        ))
+    };
+    let staged = tokio::select! {result=flow=>result,_=&mut cancellation=>Err("Authorization canceled. No account was added.".into())};
+    let result = (|| -> Result<CreateAccountCommandResult, String> {
+        let (auth, names) = staged?;
+        // This lock serializes cancellation with credential + database commit.
+        let mut operations = state.oauth_operations.lock().map_err(|e| e.to_string())?;
+        if !matches!(
+            operations.get(&operation_id),
+            Some(OAuthOperation::Running(_))
+        ) {
+            return Err("Authorization canceled. No account was added.".into());
+        }
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let mailboxes = names
+            .into_iter()
+            .map(|m| UpsertMailboxInput {
+                account_id: 0,
+                sync_enabled: default_sync_enabled_for_mailbox(mode, &m.imap_name, m.hard_excluded),
+                imap_name: m.imap_name,
+                delimiter: m.delimiter,
+                attributes: m.attributes,
+                hard_excluded: m.hard_excluded,
                 uidvalidity: None,
                 last_seen_uid: 0,
             })
+            .collect::<Vec<_>>();
+        oauth::save_token_data(&secret_store, &secret_ref, &auth.tokens)
             .map_err(|e| e.to_string())?;
+        let id = match storage.create_account_with_mailboxes(
+            &CreateAccountInput {
+                label: auth.email.clone(),
+                email_address: auth.email.clone(),
+                provider_kind: PROVIDER_KIND_GOOGLE_IMAP.into(),
+                imap_host: oauth::GOOGLE_IMAP_HOST.into(),
+                imap_port: oauth::GOOGLE_IMAP_PORT,
+                imap_tls: true,
+                imap_username: auth.email,
+                auth_kind: AUTH_KIND_OAUTH2.into(),
+                secret_ref: secret_ref.clone(),
+                mailbox_selection_mode: mode.into(),
+                oauth_provider: Some(OAUTH_PROVIDER_GOOGLE.into()),
+                oauth_scopes: Some(GOOGLE_OAUTH_SCOPES.into()),
+            },
+            &mailboxes,
+        ) {
+            Ok(id) => id,
+            Err(e) => {
+                oauth::delete_token_data(&secret_store, &secret_ref);
+                return Err(e.to_string());
+            }
+        };
+        operations.insert(operation_id.clone(), OAuthOperation::Committed(id));
+        let account = storage
+            .list_accounts()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|a| a.id == id)
+            .ok_or("Created account not found")?;
+        Ok(CreateAccountCommandResult {
+            account: map_ui_account(&account),
+            mailboxes: list_mailboxes_internal(&storage, id)?,
+        })
+    })();
+    if result.is_err() {
+        if let Ok(mut operations) = state.oauth_operations.lock() {
+            if !matches!(
+                operations.get(&operation_id),
+                Some(OAuthOperation::Committed(_))
+            ) {
+                operations.insert(operation_id, OAuthOperation::Cancelled);
+            }
+        }
     }
+    result
+}
 
-    // Log account_created event in the audit chain.
-    let _ = storage.append_event(&InsertEventInput {
-        occurred_at: now_rfc3339(),
-        kind: EVENT_KIND_ACCOUNT_CREATED.to_string(),
-        account_id: Some(account_id),
-        mailbox_id: None,
-        message_blob_id: None,
-        detail: format!(
-            r#"{{"email":"{}","imap_host":"{}","provider":"google"}}"#,
-            escape_json_value(email),
-            escape_json_value(oauth::GOOGLE_IMAP_HOST),
-        ),
-    });
-
-    let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
-    let account = accounts
-        .into_iter()
-        .find(|a| a.id == account_id)
-        .ok_or_else(|| "created account not found".to_string())?;
-
-    let mailboxes = list_mailboxes_internal(&storage, account_id)?;
-
-    Ok(CreateAccountCommandResult {
-        account: map_ui_account(&account),
-        mailboxes,
-    })
+#[tauri::command]
+pub fn cancel_google_oauth(
+    state: State<'_, AppState>,
+    operation_id: String,
+) -> Result<Option<i64>, String> {
+    use crate::app_state::OAuthOperation;
+    uuid::Uuid::parse_str(&operation_id).map_err(|_| "Invalid authorization operation")?;
+    let mut operations = state.oauth_operations.lock().map_err(|e| e.to_string())?;
+    if let Some(OAuthOperation::Committed(id)) = operations.get(&operation_id) {
+        return Ok(Some(*id));
+    }
+    if let Some(OAuthOperation::Running(sender)) =
+        operations.insert(operation_id, OAuthOperation::Cancelled)
+    {
+        let _ = sender.send(());
+    }
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -1686,42 +1866,55 @@ pub struct ArchiveStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfigV1 {
     pub db_path: String,
+    #[serde(default = "crate::configuration::default_interval")]
+    pub sync_interval_secs: u64,
 }
 
 #[tauri::command]
-pub fn get_archive_stats(db_path: String, account_id: Option<i64>) -> Result<ArchiveStats, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let diag = storage.diagnose_database().map_err(|e| e.to_string())?;
+pub async fn get_archive_stats(
+    db_path: String,
+    account_id: Option<i64>,
+) -> Result<ArchiveStats, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let diag = storage.diagnose_database().map_err(|e| e.to_string())?;
 
-    let total_messages = diag.message_blobs_count;
+        let total_messages = diag.message_blobs_count;
 
-    let account_messages = match account_id {
-        Some(aid) => {
-            let count = storage
-                .count_message_locations_for_account(aid)
-                .map_err(|e| e.to_string())?;
-            Some(count)
-        }
-        None => None,
-    };
+        let account_messages = match account_id {
+            Some(aid) => {
+                let count = storage
+                    .count_message_locations_for_account(aid)
+                    .map_err(|e| e.to_string())?;
+                Some(count)
+            }
+            None => None,
+        };
 
-    let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+        let db_size_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
 
-    Ok(ArchiveStats {
-        total_messages,
-        account_messages,
-        db_size_bytes,
+        Ok(ArchiveStats {
+            total_messages,
+            account_messages,
+            db_size_bytes,
+        })
     })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn get_archive_date_range(
+pub async fn get_archive_date_range(
     db_path: String,
 ) -> Result<email_archiver_storage::ArchiveDateRange, String> {
-    let db_path = validate_db_path(&db_path)?;
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    storage.get_archive_date_range().map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        let db_path = validate_db_path(&db_path)?;
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        storage.get_archive_date_range().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -1746,41 +1939,93 @@ pub fn is_sync_folder_path(path: String) -> bool {
 
 #[tauri::command]
 pub fn get_app_config(app_handle: AppHandle) -> Result<Option<AppConfigV1>, String> {
-    let path = resolve_app_config_path(&app_handle)?;
-    if !path.exists() {
-        return Ok(None);
-    }
-
-    let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Ok(None);
-    }
-    let parsed: AppConfigV1 = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
-    if parsed.db_path.trim().is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(parsed))
+    crate::configuration::load(&resolve_app_config_path(&app_handle)?).map(|(config, _)| {
+        config.map(|c| AppConfigV1 {
+            db_path: c.db_path,
+            sync_interval_secs: c.sync_interval_secs,
+        })
+    })
 }
 
 #[tauri::command]
 pub fn save_app_config(app_handle: AppHandle, config: AppConfigV1) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    let _guard = state.config_lock.lock().map_err(|e| e.to_string())?;
     let db_path = validate_db_path(&config.db_path)?;
-    let mut normalized = config;
-    normalized.db_path = db_path.to_string_lossy().to_string();
-
-    let path = resolve_app_config_path(&app_handle)?;
-    create_parent_dir_if_needed(&path).map_err(|e| e.to_string())?;
-    let serialized = serde_json::to_string_pretty(&normalized).map_err(|e| e.to_string())?;
-    std::fs::write(&path, serialized).map_err(|e| e.to_string())
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+    crate::configuration::save(
+        &resolve_app_config_path(&app_handle)?,
+        &crate::configuration::AppConfig {
+            db_path: db_path.to_string_lossy().into(),
+            sync_interval_secs: config.sync_interval_secs,
+        },
+    )?;
+    storage
+        .set_sync_interval_secs(config.sync_interval_secs)
+        .map_err(|e| e.to_string())?;
+    state.set_sync_interval_secs(config.sync_interval_secs);
+    Ok(())
 }
 
 #[tauri::command]
 pub fn clear_app_config(app_handle: AppHandle) -> Result<(), String> {
-    let path = resolve_app_config_path(&app_handle)?;
-    if !path.exists() {
-        return Ok(());
+    let state = app_handle.state::<AppState>();
+    let _guard = state.config_lock.lock().map_err(|e| e.to_string())?;
+    crate::configuration::clear(&resolve_app_config_path(&app_handle)?)
+}
+
+#[tauri::command]
+pub async fn select_archive(
+    app_handle: AppHandle,
+    db_path: String,
+    create: bool,
+) -> Result<AppConfigV1, String> {
+    let _sync_guard = app_handle.state::<AppState>();
+    let _sync_guard = _sync_guard.sync_lock.lock().await;
+    let validated = validate_db_path(&db_path)?;
+    let worker_path = validated.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        if create {
+            Storage::create_new(worker_path)
+        } else {
+            Storage::open_existing(worker_path)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    let config = AppConfigV1 {
+        db_path: validated.to_string_lossy().into(),
+        sync_interval_secs: app_handle.state::<AppState>().sync_interval_secs(),
+    };
+    // Hold writer ownership before committing a remembered path.
+    crate::bootstrap::activate_with(&app_handle, &config.db_path, || {
+        save_app_config(app_handle.clone(), config.clone())
+    })?;
+    crate::bootstrap::verify_async(app_handle.clone());
+    Ok(config)
+}
+
+#[tauri::command]
+pub fn get_startup_warning(state: State<'_, AppState>) -> Option<String> {
+    state.startup_warning.lock().ok().and_then(|s| s.clone())
+}
+
+#[tauri::command]
+pub fn frontend_ready(app_handle: AppHandle) -> Result<(), String> {
+    let state = app_handle.state::<AppState>();
+    state
+        .frontend_ready
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    for action in state
+        .pending_actions
+        .lock()
+        .map_err(|e| e.to_string())?
+        .drain(..)
+    {
+        let _ = app_handle.emit(&action, ());
     }
-    std::fs::remove_file(&path).map_err(|e| e.to_string())
+    Ok(())
 }
 
 #[tauri::command]
@@ -1802,7 +2047,11 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
-fn resolve_app_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn resolve_app_config_path(app_handle: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
+    if let Some(directory) = std::env::var_os("AMBERIZE_TEST_CONFIG_DIR") {
+        return Ok(PathBuf::from(directory).join("config.json"));
+    }
     let config_dir = app_handle
         .path()
         .app_config_dir()
@@ -1816,4 +2065,21 @@ fn escape_json_value(s: &str) -> String {
         .replace('"', "\\\"")
         .replace('\n', "\\n")
         .replace('\r', "\\r")
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    #[test]
+    fn tiny_compressed_images_cannot_announce_unbounded_pixel_allocations() {
+        let mut png = vec![0u8; 24];
+        png[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+        png[16..20].copy_from_slice(&100000_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&100000_u32.to_be_bytes());
+        assert!(!image_within_pixel_limit(&png));
+        png[16..20].copy_from_slice(&100_u32.to_be_bytes());
+        png[20..24].copy_from_slice(&100_u32.to_be_bytes());
+        assert!(image_within_pixel_limit(&png));
+        assert!(!image_within_pixel_limit(b"unknown format"));
+    }
 }

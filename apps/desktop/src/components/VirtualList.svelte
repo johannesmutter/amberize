@@ -13,7 +13,7 @@
     on_select,
     on_toggle_selection,
     on_click,
-    on_reach_end,
+    on_reach_end, on_reach_start, origin = 0,
   } = $props();
 
   const ROW_HEIGHT = 80;
@@ -22,6 +22,12 @@
   let container_element = $state(null);
   let scroll_top = $state(0);
   let container_height = $state(400);
+  let previous_origin = 0;
+  $effect(() => {
+    const next = origin;
+    if (container_element) { container_element.scrollTop = Math.max(0, container_element.scrollTop - (next - previous_origin) * ROW_HEIGHT); scroll_top = container_element.scrollTop; }
+    previous_origin = next;
+  });
 
   $effect(() => {
     if (!container_element) return;
@@ -63,6 +69,7 @@
   function handle_scroll(event) {
     scroll_top = event.target.scrollTop;
 
+    if (scroll_top <= ROW_HEIGHT * BUFFER_COUNT) on_reach_start?.();
     if (!on_reach_end) return;
     const remaining_px = event.target.scrollHeight - (event.target.scrollTop + event.target.clientHeight);
     const threshold_px = ROW_HEIGHT * BUFFER_COUNT * 2;
@@ -159,11 +166,12 @@
         onclick={() => handle_row_click(item)}
         role="button"
         tabindex="0"
-        onkeydown={(e) => e.key === 'Enter' && handle_row_click(item)}
+        onkeydown={(e) => {if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {e.preventDefault();handle_row_click(item);}}}
       >
         {#if bulk_mode}
           <div class="checkbox-col">
             <input
+              aria-label={`Select ${item.subject || 'email'} for export`}
               type="checkbox"
               checked={selected_ids.has(item.id)}
               onchange={(e) => handle_checkbox_change(e, item)}

@@ -42,10 +42,14 @@ def fetch_release_stats() -> tuple[int, str, list[dict]]:
     raw_json = run_command([
         "gh", "api",
         f"repos/{REPO}/releases",
-        "--paginate",
-        "--jq", ".",
+        "--paginate", "--slurp",
     ])
-    releases = json.loads(raw_json) if raw_json.startswith("[") else []
+    pages = json.loads(raw_json)
+    if not isinstance(pages, list) or any(not isinstance(page, list) for page in pages):
+        raise ValueError("Expected a JSON array of release pages from gh --slurp")
+    releases = [release for page in pages for release in page]
+    if any(not isinstance(release, dict) for release in releases):
+        raise ValueError("Invalid release entry")
 
     total_downloads = 0
     latest_version = ""

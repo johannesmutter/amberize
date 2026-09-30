@@ -2,11 +2,14 @@
   import ArchiveLocationScreen from './components/ArchiveLocationScreen.svelte';
   import MainDashboard from './components/MainDashboard.svelte';
   import SettingsPage from './components/SettingsPage.svelte';
-  import { load_config, save_config } from './lib/config.js';
-  import { tauri_invoke, tauri_listen, tauri_save_dialog, tauri_check_update, tauri_restart_app } from './lib/tauri_bridge.js';
+  import { load_config } from './lib/config.js';
+  import { tauri_invoke, listen_scoped, tauri_save_dialog, tauri_check_update, tauri_restart_app } from './lib/tauri_bridge.js';
 
   let config = $state(null);
   let config_loading = $state(true);
+  let startup_error = $state('');
+  let startup_warning = $state('');
+  let listeners_ready = $state(false);
 
   /** @type {'archive-location' | 'dashboard' | 'settings'} */
   let current_page = $state('archive-location');
@@ -15,6 +18,7 @@
   let settings_section = $state(null);
   /** @type {number | null} */
   let settings_account_id = $state(null);
+  let settings_navigation_nonce = $state(0);
 
   // Update check state
   /** @type {{ version: string, body: string | null, download_and_install: () => Promise<void> } | null} */
@@ -28,59 +32,42 @@
   let dashboard_action_type = $state('');
   /** @type {{ ok: boolean, issues: string[] } | null} */
   let integrity_status = $state(null);
-
-  // Load persisted app config on startup.
-  $effect(() => {
-    void (async () => {
-      const loaded_config = await load_config();
-      config = loaded_config;
-      current_page = loaded_config?.db_path ? 'dashboard' : 'archive-location';
-      config_loading = false;
-    })();
+  let export_operation_id = $state('');
+  let export_choosing = $state(false);
+  let export_cancel_requested = $state(false);
+  let export_message = $state('');
+  let disposed = false;
+  $effect(() => () => {
+    disposed = true;
+    if (export_operation_id) void tauri_invoke('cancel_auditor_export', {operationId:export_operation_id}).catch(() => {});
   });
 
-  // Sync backend active DB path when config changes
-  $effect(() => {
-    void sync_backend_active_db_path();
-  });
-
-  // Listen for menu events (settings from native menu)
-  $effect(() => {
-    let unlisten_settings = null;
-
-    void (async () => {
-      try {
-        unlisten_settings = await tauri_listen('menu_open_settings', () => {
-          handle_open_settings();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-    })();
-
-    return () => {
-      unlisten_settings?.();
-    };
-  });
-
-  // Listen for "Check for Updates" menu event
-  $effect(() => {
-    let unlisten_check_updates = null;
-
-    void (async () => {
-      try {
-        unlisten_check_updates = await tauri_listen('menu_check_updates', () => {
-          void handle_check_for_updates();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-    })();
-
-    return () => {
-      unlisten_check_updates?.();
-    };
-  });
+  async function restore_archive() {
+    config_loading = true; startup_error = '';
+    try {
+      config = await load_config();
+      current_page = config?.db_path ? 'dashboard' : 'archive-location';
+      if (config?.db_path) await tauri_invoke('set_active_db_path', {dbPath:config.db_path});
+      startup_warning = await tauri_invoke('get_startup_warning') ?? '';
+      if (config?.db_path) await refresh_integrity();
+    } catch (err) { startup_error = err instanceof Error ? err.message : String(err); }
+    finally { config_loading = false; }
+  }
+  $effect(() => { void restore_archive(); });
+  $effect(() => listen_scoped({
+    menu_open_settings: () => handle_open_settings(),
+    menu_check_updates: () => void handle_check_for_updates(),
+    tray_export_auditor: () => void handle_tray_export_auditor(),
+    tray_documentation: () => void handle_tray_documentation(),
+    integrity_status_updated: () => void refresh_integrity(),
+  }, () => { listeners_ready = true; }));
+  $effect(() => { if (listeners_ready && !config_loading) void tauri_invoke('frontend_ready').catch(() => {}); });
+  async function refresh_integrity() {
+    try {
+      integrity_status = await tauri_invoke('get_integrity_status');
+      startup_warning = await tauri_invoke('get_startup_warning') ?? '';
+    } catch (err) { startup_warning = String(err); }
+  }
 
   // Auto-check for updates on launch (non-blocking, silent on no-update)
   $effect(() => {
@@ -94,45 +81,6 @@
         // silently ignore — user can manually check via menu
       }
     })();
-  });
-
-  // Listen for tray menu events (sync/export/docs)
-  $effect(() => {
-    let unlisten_tray_sync = null;
-    let unlisten_tray_export = null;
-    let unlisten_tray_documentation = null;
-
-    void (async () => {
-      try {
-        unlisten_tray_sync = await tauri_listen('tray_sync_now', () => {
-          void handle_tray_sync_now();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-
-      try {
-        unlisten_tray_export = await tauri_listen('tray_export_auditor', () => {
-          void handle_tray_export_auditor();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-
-      try {
-        unlisten_tray_documentation = await tauri_listen('tray_documentation', () => {
-          void handle_tray_documentation();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-    })();
-
-    return () => {
-      unlisten_tray_sync?.();
-      unlisten_tray_export?.();
-      unlisten_tray_documentation?.();
-    };
   });
 
   async function handle_check_for_updates() {
@@ -196,19 +144,6 @@
     update_restart_ready = false;
   }
 
-  async function sync_backend_active_db_path() {
-    try {
-      const db_path = config?.db_path?.trim() ?? '';
-      if (db_path) {
-        await tauri_invoke('set_active_db_path', { dbPath: db_path });
-        return;
-      }
-      await tauri_invoke('clear_active_db_path');
-    } catch {
-      // ignore when not running inside Tauri
-    }
-  }
-
   /**
    * @returns {string}
    */
@@ -232,6 +167,7 @@
   }
 
   async function handle_tray_export_auditor() {
+    if (export_operation_id || export_choosing) return;
     const db_path = get_configured_db_path();
     if (!db_path) {
       current_page = 'archive-location';
@@ -243,6 +179,7 @@
 
     /** @type {string | null} */
     let output_zip_path = null;
+    export_choosing = true;
     try {
       output_zip_path = await tauri_save_dialog({
         title: 'Export auditor package',
@@ -250,19 +187,45 @@
         filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
       });
     } catch (err) {
-      console.error('Failed to open save dialog:', err);
+      export_message = err instanceof Error ? err.message : String(err);
       return;
+    } finally {
+      export_choosing = false;
     }
 
-    if (!output_zip_path) return;
+    if (!output_zip_path || disposed) return;
+    const operation_id = crypto.randomUUID();
+    export_operation_id = operation_id;
+    export_cancel_requested = false;
+    export_message = 'Exporting auditor package…';
 
     try {
       await tauri_invoke('export_auditor_package', {
         dbPath: db_path,
         outputZipPath: output_zip_path,
+        operationId: operation_id,
       });
+      export_message = 'Auditor package exported.';
     } catch (err) {
-      console.error('Failed to export auditor package:', err);
+      export_message = err instanceof Error ? err.message : String(err);
+    } finally {
+      export_operation_id = '';
+      export_cancel_requested = false;
+    }
+  }
+
+  async function cancel_package_export() {
+    const operation_id = export_operation_id;
+    if (!operation_id || export_cancel_requested) return;
+    export_cancel_requested = true;
+    try {
+      const published = await tauri_invoke('cancel_auditor_export', {operationId:operation_id});
+      if (export_operation_id === operation_id) export_message = published ? 'Export saved. Finishing…' : 'Canceling export…';
+    } catch (err) {
+      if (export_operation_id === operation_id) {
+        export_cancel_requested = false;
+        export_message = `Could not cancel export: ${err instanceof Error ? err.message : String(err)}`;
+      }
     }
   }
 
@@ -314,17 +277,10 @@
   /**
    * @param {string} db_path
    */
-  async function handle_archive_selected(db_path) {
-    const normalized = db_path.trim();
-    const new_config = { db_path: normalized };
-    try {
-      await save_config(new_config);
-    } catch {
-      // keep UI responsive even if persistence fails
-    }
-    config = new_config;
-    integrity_status = null;
-    current_page = 'dashboard';
+  async function handle_archive_selected(db_path, create = false) {
+    const saved = await tauri_invoke('select_archive', {dbPath:db_path.trim(),create});
+    config = saved; startup_error = ''; startup_warning = ''; integrity_status = null;
+    current_page = 'dashboard'; await refresh_integrity();
   }
 
   /**
@@ -332,13 +288,14 @@
    * @param {number} [account_id]
    */
   function handle_open_settings(section = null, account_id = null) {
-    settings_section = section;
+    settings_navigation_nonce++;
+    settings_section = config?.db_path ? section : 'general';
     settings_account_id = account_id;
     current_page = 'settings';
   }
 
   function handle_close_settings() {
-    current_page = 'dashboard';
+    current_page = config?.db_path && !startup_error ? 'dashboard' : 'archive-location';
     settings_section = null;
     settings_account_id = null;
   }
@@ -371,42 +328,7 @@
     }
   }
 
-  // Check if DB file exists (basic check)
-  async function check_db_exists() {
-    if (!config?.db_path) return false;
-    try {
-      // Try to list accounts - if it fails, DB might not exist
-      await tauri_invoke('list_accounts', { dbPath: config.db_path });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // On mount, verify DB exists
-  $effect(() => {
-    if (config?.db_path && current_page === 'dashboard') {
-      void (async () => {
-        try {
-          const exists = await check_db_exists();
-          if (!exists) {
-            // DB not found, show archive location screen
-            current_page = 'archive-location';
-            integrity_status = null;
-            return;
-          }
-          const status = await tauri_invoke('get_integrity_status');
-          if (!status || typeof status !== 'object') {
-            integrity_status = null;
-            return;
-          }
-          integrity_status = status;
-        } catch {
-          integrity_status = null;
-        }
-      })();
-    }
-  });
+  $effect(() => { if (config?.db_path && current_page === 'dashboard') void refresh_integrity(); });
 </script>
 
 <svelte:window onkeydown={handle_global_keydown} />
@@ -442,7 +364,16 @@
   </div>
 {/if}
 
-{#if integrity_status && !integrity_status.ok}
+{#if startup_warning}<div class="update-banner update-banner-warning" role="status">{startup_warning}</div>{/if}
+{#if export_message}
+  <div class="update-banner update-banner-info" role="status">
+    <span class="update-banner-text">{export_message}</span>
+    {#if export_operation_id}<button type="button" class="update-banner-action" disabled={export_cancel_requested} onclick={cancel_package_export}>Cancel export</button>
+    {:else}<button type="button" class="update-banner-dismiss" aria-label="Dismiss export status" onclick={() => {export_message = '';}}>×</button>{/if}
+  </div>
+{/if}
+
+{#if integrity_status && !integrity_status.ok && integrity_status.issues?.length}
   <div class="update-banner update-banner-warning">
     <span class="update-banner-text">
       Archive integrity warning detected.
@@ -459,20 +390,29 @@
 
 {#if config_loading}
   <div class="boot-state">Loading…</div>
+{:else if startup_error && current_page !== 'settings'}
+  <div class="boot-state" role="alert">
+    <p>Amberize could not restore your archive.</p><p>{startup_error}</p>
+    {#if config?.db_path}<code>{config.db_path}</code>{/if}
+    <p>Reconnect the archive's drive, then retry, or choose its existing file. Your saved location has been kept.</p>
+    <button onclick={restore_archive}>Retry saved archive</button>
+    <button onclick={() => { startup_error = ''; handle_change_db_path(); }}>Choose archive</button>
+  </div>
 {:else if current_page === 'archive-location'}
   <ArchiveLocationScreen on_continue={handle_archive_selected} />
 {:else if current_page === 'settings'}
   <SettingsPage
-    db_path={config.db_path}
+    db_path={config?.db_path ?? ''}
     initial_section={settings_section}
     initial_account_id={settings_account_id}
+    navigation_nonce={settings_navigation_nonce}
     on_back={handle_close_settings}
     on_start_sync={handle_start_sync}
     on_change_db_path={handle_change_db_path}
   />
 {:else}
   <MainDashboard
-    db_path={config.db_path}
+    db_path={config?.db_path ?? ''}
     on_open_settings={handle_open_settings}
     dashboard_action_nonce={dashboard_action_nonce}
     dashboard_action_type={dashboard_action_type}

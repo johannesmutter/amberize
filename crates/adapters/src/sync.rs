@@ -1,6 +1,3 @@
-use std::cmp;
-
-use futures_util::StreamExt;
 use serde::Serialize;
 use thiserror::Error;
 
@@ -11,8 +8,6 @@ use email_archiver_storage::{
 
 use crate::imap::{self, ImapConnectionSettings, ImapError};
 use crate::{SecretStore, SecretStoreError};
-
-const UID_FETCH_FALLBACK_BATCH_SIZE: usize = 200;
 
 /// Maximum size of a single MIME message (50 MB). Messages exceeding this
 /// limit are skipped to prevent memory exhaustion from malicious or
@@ -26,6 +21,7 @@ pub struct SyncSummary {
     pub messages_fetched: u64,
     pub messages_ingested: u64,
     pub had_mailbox_errors: bool,
+    pub errors: Vec<String>,
 }
 
 /// Progress snapshot emitted during sync so callers can update the UI.
@@ -139,22 +135,18 @@ pub async fn sync_account_once_with_progress(
         )
         .await;
 
-        if let Err((err_string, partial_max_uid)) = mailbox_result {
+        if let Err(failure) = mailbox_result {
             summary.had_mailbox_errors = true;
-            // Preserve partial progress: use the highest UID we successfully
-            // processed (if any) so the next sync resumes from there.
-            let cursor_uid = if partial_max_uid > mailbox.last_seen_uid {
-                partial_max_uid
-            } else {
-                mailbox.last_seen_uid
-            };
-            let _ = storage.update_mailbox_cursor(
+            summary
+                .errors
+                .push(format!("{}: {}", mailbox.imap_name, failure.message));
+            storage.update_mailbox_cursor(
                 mailbox.id,
-                mailbox.uidvalidity,
-                cursor_uid,
+                failure.uidvalidity,
+                failure.last_seen_uid,
                 Some(now_rfc3339()),
-                Some(err_string),
-            );
+                Some(failure.message),
+            )?;
             continue;
         }
 
@@ -176,8 +168,31 @@ pub async fn sync_account_once_with_progress(
     Ok(summary)
 }
 
-/// Returns `Err((error_string, partial_max_uid))` on failure so the caller
-/// can persist partial progress.
+#[derive(Debug)]
+struct MailboxFailure {
+    message: String,
+    last_seen_uid: u32,
+    uidvalidity: Option<u32>,
+}
+
+fn effective_cursor(
+    stored_generation: Option<u32>,
+    stored_uid: u32,
+    current: u32,
+) -> (Option<u32>, u32) {
+    let generation = if current == 0 {
+        stored_generation
+    } else {
+        Some(current)
+    };
+    let uid = if current != 0 && stored_generation != Some(current) {
+        0
+    } else {
+        stored_uid
+    };
+    (generation, uid)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn sync_mailbox(
     storage: &Storage,
@@ -189,119 +204,76 @@ async fn sync_mailbox(
     account_email: &str,
     mailbox_index: usize,
     mailbox_count: usize,
-) -> Result<(), (String, u32)> {
-    let selected = imap::select_mailbox(session, mailbox.imap_name.as_str())
+) -> Result<(), MailboxFailure> {
+    let selected = imap::select_mailbox(session, &mailbox.imap_name)
         .await
-        .map_err(|err| (err.to_string(), mailbox.last_seen_uid))?;
-
-    let current_uidvalidity = selected.uid_validity.unwrap_or(0);
-    let mut last_seen_uid = mailbox.last_seen_uid;
-
-    if let Some(stored_uidvalidity) = mailbox.uidvalidity {
-        if current_uidvalidity != 0 && stored_uidvalidity != current_uidvalidity {
-            last_seen_uid = 0;
-        }
-    }
-
-    // Only use UIDNEXT as a short-circuit when we have a valid, non-reset cursor.
-    // If last_seen_uid was reset to 0 (UIDVALIDITY changed), we must always attempt a fetch.
-    if last_seen_uid > 0 {
-        if let Some(uid_next) = selected.uid_next {
-            if uid_next > 1 {
-                let end_uid = uid_next.saturating_sub(1);
-                if end_uid <= last_seen_uid {
-                    storage
-                        .update_mailbox_cursor(
-                            mailbox.id,
-                            if current_uidvalidity == 0 {
-                                mailbox.uidvalidity
-                            } else {
-                                Some(current_uidvalidity)
-                            },
-                            last_seen_uid,
-                            Some(now_rfc3339()),
-                            None,
-                        )
-                        .map_err(|err| (err.to_string(), last_seen_uid))?;
-                    return Ok(());
-                }
-            }
-        }
-    }
-
-    let start_uid = last_seen_uid.saturating_add(1);
-    let uid_set = format!("{start_uid}:*");
-
-    let mut max_seen_uid = last_seen_uid;
-    let mut fetched_in_mailbox: u64 = 0;
-    let mut fetch_stream = imap::fetch_uids_stream(session, uid_set.as_str())
+        .map_err(|e| MailboxFailure {
+            message: e.to_string(),
+            last_seen_uid: mailbox.last_seen_uid,
+            uidvalidity: mailbox.uidvalidity,
+        })?;
+    let (generation, mut cursor) = effective_cursor(
+        mailbox.uidvalidity,
+        mailbox.last_seen_uid,
+        selected.uid_validity.unwrap_or(0),
+    );
+    let failure = |message: String, uid| MailboxFailure {
+        message,
+        last_seen_uid: uid,
+        uidvalidity: generation,
+    };
+    let uids = imap::uid_search(session, &format!("UID {}:*", cursor.saturating_add(1)))
         .await
-        .map_err(|err| (err.to_string(), max_seen_uid))?;
-
-    while let Some(fetch) = fetch_stream.next().await {
-        let fetch = fetch.map_err(|err| (err.to_string(), max_seen_uid))?;
-
-        let Some(uid) = fetch.uid else {
-            return Err((
-                format!(
-                    "mailbox '{}' returned FETCH without UID (seq={})",
-                    mailbox.imap_name, fetch.message
-                ),
-                max_seen_uid,
-            ));
-        };
-        let Some(body) = fetch.body() else {
-            return Err((
-                format!(
-                    "mailbox '{}' returned FETCH without body for uid {uid}",
-                    mailbox.imap_name
-                ),
-                max_seen_uid,
-            ));
-        };
-
-        // Skip messages exceeding the size limit.
-        let body_bytes = body.to_vec();
-        if body_bytes.len() > MAX_MESSAGE_SIZE_BYTES {
-            eprintln!(
-                "warning: skipping uid={uid} in '{}' ({} bytes > {} limit)",
-                mailbox.imap_name,
-                body_bytes.len(),
-                MAX_MESSAGE_SIZE_BYTES,
-            );
-            max_seen_uid = cmp::max(max_seen_uid, uid);
-            continue;
+        .map_err(|e| failure(e.to_string(), cursor))?;
+    // SEARCH results are sorted. Fetch one explicit UID so out-of-order server responses
+    // cannot advance the cursor over a message that failed or has not been processed.
+    for uid in uids
+        .into_iter()
+        .filter(|uid| *uid > cursor)
+        .collect::<Vec<_>>()
+    {
+        let size = imap::fetch_size(session, uid)
+            .await
+            .map_err(|e| failure(e.to_string(), cursor))?;
+        if size as usize > MAX_MESSAGE_SIZE_BYTES {
+            return Err(failure(format!("UID {uid} is {size} bytes, above the 50 MiB archive limit. It remains unarchived; later UIDs in this folder wait until this message is resolved."),cursor));
         }
-
-        summary.messages_fetched += 1;
-        fetched_in_mailbox += 1;
-
-        let raw_mime = body_bytes;
-        let sha256 = sha256_hex(&raw_mime);
-
-        let imported_at = now_rfc3339();
-        let extracted = extract_metadata(&raw_mime);
-
+        let fetches = imap::fetch_uids(session, &uid.to_string())
+            .await
+            .map_err(|e| failure(e.to_string(), cursor))?;
+        let fetch = fetches.iter().find(|f| f.uid == Some(uid)).ok_or_else(|| {
+            failure(
+                format!("Server returned no message for UID {uid}; retry discovery"),
+                cursor,
+            )
+        })?;
+        let body = fetch
+            .body()
+            .ok_or_else(|| failure(format!("Server returned UID {uid} without a body"), cursor))?;
+        // Also reject servers that report a false size before making our second copy.
+        if body.len() > MAX_MESSAGE_SIZE_BYTES {
+            return Err(failure(
+                format!("UID {uid} exceeded the 50 MiB limit despite its reported size"),
+                cursor,
+            ));
+        }
+        let sha256 = sha256_hex(body);
+        let extracted = extract_metadata(body);
+        let now = now_rfc3339();
         let flags = fetch
             .flags()
-            .map(|flag| format!("{flag:?}"))
+            .map(|f| format!("{f:?}"))
             .collect::<Vec<_>>()
             .join(",");
-
-        let internal_date = fetch.internal_date().map(|dt| dt.to_rfc3339());
-
-        let now = now_rfc3339();
-
-        // Atomic: insert blob + location in a single transaction.
         storage
             .ingest_message(
-                &InsertMessageBlobInput::raw(sha256, raw_mime, imported_at, extracted),
+                &InsertMessageBlobInput::raw(sha256, body.to_vec(), now.clone(), extracted),
                 &IngestMessageLocationInput {
                     account_id,
                     mailbox_id: mailbox.id,
-                    uidvalidity: current_uidvalidity,
+                    uidvalidity: generation.unwrap_or(0),
                     uid,
-                    internal_date,
+                    internal_date: fetch.internal_date().map(|d| d.to_rfc3339()),
                     flags: if flags.is_empty() { None } else { Some(flags) },
                     provider_message_id: None,
                     provider_thread_id: None,
@@ -311,15 +283,18 @@ async fn sync_mailbox(
                     last_seen_at: now,
                 },
             )
-            .map_err(|err| (err.to_string(), max_seen_uid))?;
-
+            .map_err(|e| failure(e.to_string(), cursor))?;
+        cursor = uid;
+        summary.messages_fetched += 1;
         summary.messages_ingested += 1;
-        max_seen_uid = cmp::max(max_seen_uid, uid);
-
-        // Emit progress after each message so the UI can update.
+        // Persist bounded progress after each atomic ingestion. A crash between these
+        // transactions repeats a deduplicated message instead of losing coverage.
+        storage
+            .update_mailbox_cursor(mailbox.id, generation, cursor, Some(now_rfc3339()), None)
+            .map_err(|e| failure(e.to_string(), cursor))?;
         if let Some(cb) = on_progress {
             cb(&SyncProgress {
-                account_email: account_email.to_string(),
+                account_email: account_email.into(),
                 mailbox_name: mailbox.imap_name.clone(),
                 mailbox_index,
                 mailbox_count,
@@ -328,202 +303,20 @@ async fn sync_mailbox(
             });
         }
     }
-
-    // Important: the stream borrows `session` mutably; drop it before issuing other IMAP commands.
-    drop(fetch_stream);
-
-    // If the primary UID range fetch yielded nothing on the first sync, fall back to:
-    // `UID SEARCH ALL` → fetch explicit UID batches. This helps with servers that accept
-    // `UID FETCH 1:*` but return no FETCH responses.
-    if last_seen_uid == 0 && fetched_in_mailbox == 0 {
-        let searched_all = imap::uid_search(session, "ALL")
-            .await
-            .map_err(|err| (err.to_string(), max_seen_uid))?;
-
-        let mut uids_to_fetch = searched_all
-            .into_iter()
-            .filter(|uid| *uid != 0 && *uid > last_seen_uid)
-            .collect::<Vec<_>>();
-        uids_to_fetch.sort_unstable();
-
-        if !uids_to_fetch.is_empty() {
-            for batch in uids_to_fetch.chunks(UID_FETCH_FALLBACK_BATCH_SIZE) {
-                let uid_set = uids_to_sequence_set(batch);
-                let mut batch_stream = imap::fetch_uids_stream(session, uid_set.as_str())
-                    .await
-                    .map_err(|err| (err.to_string(), max_seen_uid))?;
-
-                while let Some(fetch) = batch_stream.next().await {
-                    let fetch = fetch.map_err(|err| (err.to_string(), max_seen_uid))?;
-
-                    let Some(uid) = fetch.uid else {
-                        return Err((
-                            format!(
-                                "mailbox '{}' returned FETCH without UID (seq={})",
-                                mailbox.imap_name, fetch.message
-                            ),
-                            max_seen_uid,
-                        ));
-                    };
-                    let Some(body) = fetch.body() else {
-                        return Err((
-                            format!(
-                                "mailbox '{}' returned FETCH without body for uid {uid}",
-                                mailbox.imap_name
-                            ),
-                            max_seen_uid,
-                        ));
-                    };
-
-                    // Skip oversized messages in fallback path too.
-                    let body_bytes = body.to_vec();
-                    if body_bytes.len() > MAX_MESSAGE_SIZE_BYTES {
-                        eprintln!(
-                            "warning: skipping uid={uid} in '{}' ({} bytes > {} limit)",
-                            mailbox.imap_name,
-                            body_bytes.len(),
-                            MAX_MESSAGE_SIZE_BYTES,
-                        );
-                        max_seen_uid = cmp::max(max_seen_uid, uid);
-                        continue;
-                    }
-
-                    summary.messages_fetched += 1;
-                    fetched_in_mailbox += 1;
-
-                    let raw_mime = body_bytes;
-                    let sha256 = sha256_hex(&raw_mime);
-
-                    let imported_at = now_rfc3339();
-                    let extracted = extract_metadata(&raw_mime);
-
-                    let flags = fetch
-                        .flags()
-                        .map(|flag| format!("{flag:?}"))
-                        .collect::<Vec<_>>()
-                        .join(",");
-
-                    let internal_date = fetch.internal_date().map(|dt| dt.to_rfc3339());
-
-                    let now = now_rfc3339();
-
-                    // Atomic: insert blob + location in a single transaction.
-                    storage
-                        .ingest_message(
-                            &InsertMessageBlobInput::raw(sha256, raw_mime, imported_at, extracted),
-                            &IngestMessageLocationInput {
-                                account_id,
-                                mailbox_id: mailbox.id,
-                                uidvalidity: current_uidvalidity,
-                                uid,
-                                internal_date,
-                                flags: if flags.is_empty() { None } else { Some(flags) },
-                                provider_message_id: None,
-                                provider_thread_id: None,
-                                provider_labels: None,
-                                provider_meta_json: None,
-                                first_seen_at: now.clone(),
-                                last_seen_at: now,
-                            },
-                        )
-                        .map_err(|err| (err.to_string(), max_seen_uid))?;
-
-                    summary.messages_ingested += 1;
-                    max_seen_uid = cmp::max(max_seen_uid, uid);
-
-                    if let Some(cb) = on_progress {
-                        cb(&SyncProgress {
-                            account_email: account_email.to_string(),
-                            mailbox_name: mailbox.imap_name.clone(),
-                            mailbox_index,
-                            mailbox_count,
-                            messages_fetched: summary.messages_fetched,
-                            messages_ingested: summary.messages_ingested,
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    if last_seen_uid == 0 && selected.exists > 0 && fetched_in_mailbox == 0 {
-        return Err((
-            format!(
-                "mailbox '{}' reports {} messages, but fetched 0 messages (uidvalidity={current_uidvalidity}, uidnext={:?})",
-                mailbox.imap_name, selected.exists, selected.uid_next
-            ),
-            max_seen_uid,
-        ));
-    }
-
     storage
-        .update_mailbox_cursor(
-            mailbox.id,
-            if current_uidvalidity == 0 {
-                mailbox.uidvalidity
-            } else {
-                Some(current_uidvalidity)
-            },
-            max_seen_uid,
-            Some(now_rfc3339()),
-            None,
-        )
-        .map_err(|err| (err.to_string(), max_seen_uid))?;
-
+        .update_mailbox_cursor(mailbox.id, generation, cursor, Some(now_rfc3339()), None)
+        .map_err(|e| failure(e.to_string(), cursor))?;
     Ok(())
 }
 
-fn uids_to_sequence_set(uids: &[u32]) -> String {
-    if uids.is_empty() {
-        return String::new();
-    }
-
-    let mut parts = Vec::new();
-    let mut range_start = uids[0];
-    let mut prev = uids[0];
-
-    for &uid in &uids[1..] {
-        if uid == prev.saturating_add(1) {
-            prev = uid;
-            continue;
-        }
-
-        parts.push(format_uid_range(range_start, prev));
-        range_start = uid;
-        prev = uid;
-    }
-
-    parts.push(format_uid_range(range_start, prev));
-    parts.join(",")
-}
-
-fn format_uid_range(start: u32, end: u32) -> String {
-    if start == end {
-        start.to_string()
-    } else {
-        format!("{start}:{end}")
-    }
-}
-
 fn is_hard_excluded_mailbox(name: &async_imap::types::Name) -> bool {
-    if imap::is_hard_excluded_by_attributes(name) {
-        return true;
-    }
-
-    let mailbox_name = name.name().to_ascii_lowercase();
-    is_hard_excluded_by_common_name(&mailbox_name)
+    imap::is_hard_excluded_by_attributes(name)
+        || is_hard_excluded_by_common_name(&name.name().to_ascii_lowercase())
 }
-
-pub fn is_hard_excluded_by_common_name(mailbox_name_lower: &str) -> bool {
-    // Common mailbox names like “Spam”, “Junk”, “Trash”, “Drafts” etc. are typically selectable
-    // and can be valuable to archive (especially for troubleshooting). We only treat `\NoSelect`
-    // mailboxes as hard-excluded.
-    let _ = mailbox_name_lower;
+pub fn is_hard_excluded_by_common_name(_name: &str) -> bool {
     false
 }
 
-/// Connect to the IMAP server for a given account, using the appropriate
-/// authentication method (password or OAuth2 XOAUTH2).
 async fn connect_imap_for_account(
     secret_store: &dyn SecretStore,
     account: &AccountRow,
@@ -636,5 +429,16 @@ mod tests {
         assert!(!is_hard_excluded_by_common_name("Spam"));
         assert!(!is_hard_excluded_by_common_name("Papierkorb"));
         assert!(!is_hard_excluded_by_common_name("inbox"));
+    }
+}
+
+#[cfg(test)]
+mod cursor_tests {
+    use super::*;
+    #[test]
+    fn generation_reset_does_not_restore_old_high_cursor() {
+        assert_eq!(effective_cursor(Some(1), 900, 2), (Some(2), 0));
+        assert_eq!(effective_cursor(Some(2), 3, 2), (Some(2), 3));
+        assert_eq!(effective_cursor(None, 900, 2), (Some(2), 0));
     }
 }

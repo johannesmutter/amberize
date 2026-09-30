@@ -10,12 +10,11 @@
  * @returns {Promise<T>}
  */
 export async function tauri_invoke(command, args = {}) {
-  try {
-    const mod = await import('@tauri-apps/api/core');
-    return await mod.invoke(command, args);
-  } catch (err) {
-    throw new Error(`Tauri invoke unavailable (${command}): ${stringify_error(err)}`);
-  }
+  let mod;
+  try { mod = await import('@tauri-apps/api/core'); }
+  catch (err) { throw new Error(`Desktop connection unavailable: ${stringify_error(err)}`); }
+  try { return await mod.invoke(command, args); }
+  catch (err) { throw new Error(stringify_error(err)); }
 }
 
 /**
@@ -100,6 +99,7 @@ export async function tauri_restart_app() {
  */
 function stringify_error(err) {
   if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
   try {
     return JSON.stringify(err);
   } catch {
@@ -107,3 +107,16 @@ function stringify_error(err) {
   }
 }
 
+
+/** Register listeners with cleanup even if registration finishes after unmount. */
+export function listen_scoped(handlers, ready) {
+  let disposed = false;
+  const cleanups = [];
+  const registration = Promise.all(Object.entries(handlers).map(async ([name,handler]) => {
+    try { const off = await tauri_listen(name, event => { if (!disposed) handler(event); });
+      if (disposed) off(); else cleanups.push(off);
+    } catch { /* Browser preview has no native events. */ }
+  }));
+  void registration.then(() => { if (!disposed) ready?.(); });
+  return () => { disposed = true; for (const off of cleanups) off(); };
+}

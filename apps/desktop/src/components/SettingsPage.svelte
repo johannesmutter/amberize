@@ -1,27 +1,41 @@
 <script>
+  import { untrack } from 'svelte';
   import { tauri_invoke } from '../lib/tauri_bridge.js';
   import AccountSettings from './AccountSettings.svelte';
   import AddAccountForm from './AddAccountForm.svelte';
   import GeneralSettings from './GeneralSettings.svelte';
   import EmptyState from './EmptyState.svelte';
 
-  let { db_path, initial_section = 'accounts', initial_account_id = null, on_back, on_start_sync, on_change_db_path } = $props();
+  let { db_path, initial_section = 'accounts', initial_account_id = null, navigation_nonce = 0, on_back, on_start_sync, on_change_db_path } = $props();
 
   /** @type {'accounts' | 'general' | 'diagnostics' | 'activity-log'} */
-  let active_section = $state(
-    initial_section === 'general' ? 'general'
-    : initial_section === 'diagnostics' ? 'diagnostics'
-    : initial_section === 'activity-log' ? 'activity-log'
-    : 'accounts'
-  );
+  let active_section = $state('general');
 
   /** @type {any[]} */
   let accounts = $state([]);
 
   /** @type {number | 'new' | null} */
-  let selected_account_id = $state(initial_account_id);
+  let selected_account_id = $state(null);
 
   let adding_account = $state(false);
+  let account_load_error = $state('');
+
+  // Honor each explicit navigation request, including repeated requests while
+  // Settings is already mounted. Local sidebar navigation stays independent.
+  $effect(() => {
+    navigation_nonce;
+    const section = !db_path || initial_section === 'general' ? 'general'
+      : initial_section === 'diagnostics' ? 'diagnostics'
+      : initial_section === 'activity-log' ? 'activity-log' : 'accounts';
+    const account_id = initial_account_id;
+    untrack(() => {
+      active_section = section;
+      selected_account_id = account_id ?? (section === 'accounts' ? accounts.find(a => !a.disabled)?.id ?? null : null);
+      adding_account = false;
+      if (section === 'diagnostics') void run_diagnostics();
+      if (section === 'activity-log') void load_events();
+    });
+  });
 
   // Load accounts on mount
   $effect(() => {
@@ -37,12 +51,14 @@
       if (selected_account_id === null && active.length > 0 && active_section === 'accounts') {
         selected_account_id = active[0].id;
       }
-    } catch {
-      accounts = [];
+    } catch (err) {
+      account_load_error = String(err);
     }
   }
 
   function handle_add_account_click() {
+    if (!db_path) { active_section = 'general'; return; }
+    active_section = 'accounts';
     adding_account = true;
     selected_account_id = 'new';
   }
@@ -415,6 +431,7 @@
 </script>
 
 <div class="settings-page">
+  {#if account_load_error}<p role="alert">{account_load_error}</p>{/if}
   <!-- Sidebar -->
   <nav class="sidebar">
     <div class="sidebar-section sidebar-top">

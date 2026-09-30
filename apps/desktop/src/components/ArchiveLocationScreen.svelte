@@ -6,6 +6,8 @@
   const DEFAULT_DB_FILENAME = 'email-archive.sqlite3';
 
   let db_path = $state('');
+  let create = $state(false);
+  let busy = $state(false);
   let error_message = $state('');
   let sync_folder_warning = $state('');
 
@@ -22,7 +24,7 @@
         filters: [{ name: 'SQLite database', extensions: ['sqlite3', 'db'] }],
       });
       if (!selected) return;
-      db_path = selected;
+      db_path = selected; create = false;
       await update_sync_folder_warning(selected);
     } catch (err) {
       error_message = err instanceof Error ? err.message : String(err);
@@ -41,7 +43,7 @@
         filters: [{ name: 'SQLite database', extensions: ['sqlite3', 'db'] }],
       });
       if (!selected) return;
-      db_path = selected;
+      db_path = selected; create = true;
       await update_sync_folder_warning(selected);
     } catch (err) {
       error_message = err instanceof Error ? err.message : String(err);
@@ -63,13 +65,15 @@
     }
   }
 
-  function handle_continue() {
+  async function handle_continue() {
+    if (busy) return;
     const trimmed = db_path.trim();
     if (!trimmed) {
       error_message = 'Please choose a location for your email archive.';
       return;
     }
-    on_continue(trimmed);
+    busy = true; error_message = '';
+    try { await on_continue(trimmed, create); } catch (err) { error_message = err instanceof Error ? err.message : String(err); } finally { busy = false; }
   }
 
   function handle_keydown(event) {
@@ -118,9 +122,9 @@
         type="button"
         class="continue-button"
         onclick={handle_continue}
-        disabled={!db_path.trim()}
+        disabled={busy || !db_path.trim()}
       >
-        Continue
+        {busy ? 'Opening archive…' : 'Continue'}
       </button>
     </div>
   </div>

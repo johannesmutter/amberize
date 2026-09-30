@@ -179,6 +179,14 @@ def update_versions(target_version: str) -> None:
         ]
     )
 
+    # Update only the workspace package version; preserve all locked dependency versions.
+    lock_path = ROOT_DIR / "Cargo.lock"
+    text = lock_path.read_text(encoding="utf-8")
+    text, count = re.subn(r'(\[\[package\]\]\nname = "amberize"\nversion = ")[^"]+("\n)', lambda match: match[1] + target_version + match[2], text)
+    if count != 1:
+        raise RuntimeError("Could not identify Amberize in Cargo.lock")
+    lock_path.write_text(text, encoding="utf-8")
+
 
 def select_target_version(base_version: str) -> str:
     """Interactive version selection."""
@@ -239,6 +247,7 @@ def create_release_commit(target_version: str) -> None:
             str(CARGO_TOML_PATH.relative_to(ROOT_DIR)),
             str(PACKAGE_JSON_PATH.relative_to(ROOT_DIR)),
             "apps/desktop/package-lock.json",
+            "Cargo.lock",
         ],
         cwd=ROOT_DIR,
     )

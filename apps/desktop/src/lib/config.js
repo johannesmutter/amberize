@@ -11,9 +11,7 @@ const CONFIG_STORAGE_KEY = 'amberize_config_v1';
  * @returns {Promise<AppConfigV1 | null>}
  */
 export async function load_config() {
-  const tauri_config = await load_tauri_config();
-  if (tauri_config) return tauri_config;
-  return load_local_config();
+  return is_tauri_runtime() ? await load_tauri_config() : load_local_config();
 }
 
 /**
@@ -22,7 +20,7 @@ export async function load_config() {
  */
 export async function save_config(config) {
   const normalized = normalize_config(config);
-  if (!normalized) return;
+  if (!normalized) throw new Error("Choose a valid archive path.");
 
   if (is_tauri_runtime()) {
     await tauri_invoke('save_app_config', { config: normalized });
@@ -55,12 +53,10 @@ function is_tauri_runtime() {
  */
 async function load_tauri_config() {
   if (!is_tauri_runtime()) return null;
-  try {
-    const config = await tauri_invoke('get_app_config');
-    return normalize_config(config);
-  } catch {
-    return null;
-  }
+  const config = await tauri_invoke('get_app_config');
+  const normalized = normalize_config(config);
+  if (config != null && !normalized) throw new Error("Saved archive settings are invalid.");
+  return normalized;
 }
 
 /**
@@ -93,6 +89,6 @@ function normalize_config(value) {
   if (typeof value.db_path !== 'string') return null;
   const db_path = value.db_path.trim();
   if (!db_path) return null;
-  return { db_path };
+  return { db_path, ...(Number.isFinite(value.sync_interval_secs) ? { sync_interval_secs: value.sync_interval_secs } : {}) };
 }
 

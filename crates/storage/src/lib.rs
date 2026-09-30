@@ -4,13 +4,14 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const PRAGMA_JOURNAL_MODE_WAL: &str = "WAL";
 const PRAGMA_SYNCHRONOUS_NORMAL: &str = "NORMAL";
@@ -42,6 +43,10 @@ pub const EVENT_KIND_EMAIL_ARCHIVED: &str = "email_archived";
 
 #[derive(Debug, Error)]
 pub enum StorageError {
+    #[error("archive is unavailable: {0}")]
+    InvalidArchive(String),
+    #[error("internal storage lock failed")]
+    LockPoisoned,
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
 
@@ -58,31 +63,218 @@ pub enum StorageError {
 pub type StorageResult<T> = Result<T, StorageError>;
 
 #[derive(Debug, Clone)]
+struct RootSnapshot {
+    hash: String,
+    count: u64,
+    max_id: i64,
+}
+#[derive(Debug)]
+struct ConnectionOwner {
+    connection: Mutex<Connection>,
+    blob_revision: Arc<AtomicU64>,
+    root_cache: Mutex<Option<(u64, i64, RootSnapshot)>>,
+    root_scans: AtomicU64,
+}
+type SharedConnection = Arc<ConnectionOwner>;
+struct CachedConnection {
+    identity: same_file::Handle,
+    owner: Weak<ConnectionOwner>,
+    keepalive: Option<SharedConnection>,
+}
+// Four bounded 4 MiB caches cover the active archive, switches and concurrent readers.
+static CONNECTIONS: LazyLock<Mutex<Vec<CachedConnection>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
+
+#[derive(Debug, Clone)]
 pub struct Storage {
     db_path: PathBuf,
+    connection: SharedConnection,
 }
 
 impl Storage {
-    pub fn open_or_create(db_path: impl AsRef<Path>) -> StorageResult<Self> {
-        let db_path = db_path.as_ref().to_path_buf();
-        create_parent_dir_if_needed(&db_path)?;
+    /// Explicit archive creation. Never replaces an existing file.
+    pub fn create_new(db_path: impl AsRef<Path>) -> StorageResult<Self> {
+        let path = db_path.as_ref();
+        create_parent_dir_if_needed(path)?;
+        std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)?;
+        Self::open_or_create(path)
+    }
 
-        let storage = Self { db_path };
-        let mut conn = storage.open_connection()?;
-        migrate(&mut conn)?;
+    /// Restore/read an archive without creating a file or accepting another SQLite database.
+    pub fn open_existing(db_path: impl AsRef<Path>) -> StorageResult<Self> {
+        use std::io::Read;
+        let path = db_path.as_ref();
+        let mut file = std::fs::File::open(path)?;
+        if !file.metadata()?.is_file() {
+            return Err(StorageError::InvalidArchive(
+                "choose an archive file".into(),
+            ));
+        }
+        let mut header = [0_u8; 16];
+        file.read_exact(&mut header)
+            .map_err(|_| StorageError::InvalidArchive("file is not a SQLite archive".into()))?;
+        if &header != b"SQLite format 3\0" {
+            return Err(StorageError::InvalidArchive(
+                "file is not a SQLite archive".into(),
+            ));
+        }
+        let storage = Self::connect(path, false, true)?;
+        {
+            let mut conn = storage.open_connection()?;
+            let version: Option<String> = conn
+                .query_row(
+                    "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(|_| {
+                    StorageError::InvalidArchive("file is not an Amberize archive".into())
+                })?;
+            let version = version
+                .and_then(|v| v.parse::<i64>().ok())
+                .filter(|v| *v >= 1)
+                .ok_or_else(|| {
+                    StorageError::InvalidArchive(
+                        "archive schema version is missing or invalid".into(),
+                    )
+                })?;
+            if version > SCHEMA_VERSION {
+                return Err(StorageError::UnsupportedSchemaVersion {
+                    found: version,
+                    supported: SCHEMA_VERSION,
+                });
+            }
+            // Do not recreate missing tables/guards in an existing current-version archive.
+            if version < SCHEMA_VERSION {
+                migrate(&mut conn)?;
+            }
+        }
         Ok(storage)
     }
 
-    pub fn open_in_memory_for_tests() -> StorageResult<Self> {
-        // Note: `:memory:` would create a *separate* database per connection, but this
-        // storage abstraction opens new connections per operation. For predictable tests,
-        // we use a temp file-backed SQLite DB instead.
-        let db_path = test_db_path();
-        create_parent_dir_if_needed(&db_path)?;
-        let storage = Self { db_path };
-        let mut conn = storage.open_connection()?;
-        migrate(&mut conn)?;
+    // Retained for migrations/tests. Application operations use open_existing/create_new.
+    pub fn open_or_create(db_path: impl AsRef<Path>) -> StorageResult<Self> {
+        let path = db_path.as_ref();
+        create_parent_dir_if_needed(path)?;
+        let storage = Self::connect(path, true, true)?;
+        {
+            let mut conn = storage.open_connection()?;
+            migrate(&mut conn)?;
+        }
         Ok(storage)
+    }
+
+    fn connect(path: &Path, create: bool, cached: bool) -> StorageResult<Self> {
+        if path.as_os_str() != ":memory:" && cached && path.exists() {
+            let identity = same_file::Handle::from_path(path)?;
+            let mut cache = CONNECTIONS.lock().map_err(|_| StorageError::LockPoisoned)?;
+            cache.retain(|entry| entry.owner.strong_count() > 0);
+            if let Some(index) = cache.iter().position(|entry| entry.identity == identity) {
+                let entry = cache.remove(index);
+                let connection = entry.owner.upgrade().ok_or(StorageError::LockPoisoned)?;
+                cache.push(entry);
+                return Ok(Self {
+                    db_path: path.to_path_buf(),
+                    connection,
+                });
+            }
+        }
+        let conn = if path.as_os_str() == ":memory:" {
+            Connection::open_in_memory()?
+        } else {
+            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+                | if create {
+                    OpenFlags::SQLITE_OPEN_CREATE
+                } else {
+                    OpenFlags::empty()
+                };
+            Connection::open_with_flags(path, flags)?
+        };
+        apply_connection_pragmas(&conn, path.as_os_str() != ":memory:" && cached)?;
+        conn.busy_timeout(DB_BUSY_TIMEOUT)?;
+        conn.pragma_update(None, "cache_size", -4096)?;
+        conn.set_prepared_statement_cache_capacity(24);
+        let blob_revision = Arc::new(AtomicU64::new(0));
+        let hook_revision = blob_revision.clone();
+        conn.update_hook(Some(move |_action, database: &str, table: &str, _row| {
+            if database == "main" && table == "message_blobs" {
+                hook_revision.fetch_add(1, Ordering::Relaxed);
+            }
+        }));
+        let connection = Arc::new(ConnectionOwner {
+            connection: Mutex::new(conn),
+            blob_revision,
+            root_cache: Mutex::new(None),
+            root_scans: AtomicU64::new(0),
+        });
+        if cached && path.as_os_str() != ":memory:" {
+            let identity = same_file::Handle::from_path(path)?;
+            let mut cache = CONNECTIONS.lock().map_err(|_| StorageError::LockPoisoned)?;
+            cache.retain(|entry| entry.owner.strong_count() > 0);
+            if let Some(existing) = cache.iter().find(|entry| entry.identity == identity) {
+                return Ok(Self {
+                    db_path: path.to_path_buf(),
+                    connection: existing.owner.upgrade().ok_or(StorageError::LockPoisoned)?,
+                });
+            }
+            if cache
+                .iter()
+                .filter(|entry| entry.keepalive.is_some())
+                .count()
+                >= 4
+            {
+                if let Some(entry) = cache.iter_mut().find(|entry| entry.keepalive.is_some()) {
+                    entry.keepalive = None;
+                }
+            }
+            cache.push(CachedConnection {
+                identity,
+                owner: Arc::downgrade(&connection),
+                keepalive: Some(connection.clone()),
+            });
+        }
+        Ok(Self {
+            db_path: path.to_path_buf(),
+            connection,
+        })
+    }
+
+    pub fn open_in_memory_for_tests() -> StorageResult<Self> {
+        Self::open_or_create(test_db_path())
+    }
+
+    /// A standalone online backup provides one coherent export/verification state.
+    pub fn snapshot_to(&self, path: &Path) -> StorageResult<Self> {
+        self.snapshot_to_checked(path, || Ok(()))
+    }
+
+    /// Check cancellation between bounded backup steps. The caller owns and
+    /// cleans up the destination when a partial backup is interrupted.
+    pub fn snapshot_to_checked(
+        &self,
+        path: &Path,
+        check: impl Fn() -> StorageResult<()>,
+    ) -> StorageResult<Self> {
+        check()?;
+        let conn = self.open_connection()?;
+        let mut destination = Connection::open(path)?;
+        {
+            let backup = rusqlite::backup::Backup::new(&conn, &mut destination)?;
+            loop {
+                check()?;
+                if backup.step(256)? == rusqlite::backup::StepResult::Done {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        check()?;
+        drop(destination);
+        Self::connect(path, false, false)
     }
 
     pub fn db_path(&self) -> &Path {
@@ -91,7 +283,7 @@ impl Storage {
 
     pub fn schema_version(&self) -> StorageResult<i64> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare("SELECT value FROM schema_meta WHERE key = ?1")?;
+        let mut stmt = conn.prepare_cached("SELECT value FROM schema_meta WHERE key = ?1")?;
         let value: Option<String> = stmt
             .query_row([SCHEMA_META_KEY_SCHEMA_VERSION], |row| row.get(0))
             .optional()?;
@@ -105,57 +297,38 @@ impl Storage {
 
     pub fn create_account(&self, input: &CreateAccountInput) -> StorageResult<i64> {
         let mut conn = self.open_connection()?;
-        let now = now_rfc3339();
         let tx = conn.transaction()?;
-
-        tx.execute(
-            r#"
-      INSERT INTO accounts (
-        label,
-        email_address,
-        provider_kind,
-        imap_host,
-        imap_port,
-        imap_tls,
-        imap_username,
-        auth_kind,
-        secret_ref,
-        oauth_provider,
-        oauth_user_id,
-        oauth_tenant_id,
-        oauth_scopes,
-        oauth_meta_json,
-        mailbox_selection_mode,
-        created_at,
-        updated_at,
-        disabled
-      ) VALUES (
-        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
-        ?10, NULL, NULL, ?11, NULL,
-        ?12, ?13, ?14, 0
-      )
-      "#,
-            params![
-                input.label,
-                input.email_address,
-                input.provider_kind,
-                input.imap_host,
-                input.imap_port as i64,
-                bool_to_int(input.imap_tls),
-                input.imap_username,
-                input.auth_kind,
-                input.secret_ref,
-                input.oauth_provider,
-                input.oauth_scopes,
-                input.mailbox_selection_mode,
-                now,
-                now
-            ],
-        )?;
-
-        let account_id = tx.last_insert_rowid();
+        let id = create_account_tx(&tx, input)?;
         tx.commit()?;
-        Ok(account_id)
+        Ok(id)
+    }
+
+    pub fn create_account_with_mailboxes(
+        &self,
+        input: &CreateAccountInput,
+        mailboxes: &[UpsertMailboxInput],
+    ) -> StorageResult<i64> {
+        let mut conn = self.open_connection()?;
+        let mut tx = conn.transaction()?;
+        let id = create_account_tx(&tx, input)?;
+        for mailbox in mailboxes {
+            let mut mailbox = mailbox.clone();
+            mailbox.account_id = id;
+            upsert_mailbox_tx(&tx, &mailbox)?;
+        }
+        insert_event_tx(
+            &mut tx,
+            &InsertEventInput {
+                occurred_at: now_rfc3339(),
+                kind: "account_created".into(),
+                account_id: Some(id),
+                mailbox_id: None,
+                message_blob_id: None,
+                detail: serde_json::json!({"email":input.email_address}).to_string(),
+            },
+        )?;
+        tx.commit()?;
+        Ok(id)
     }
 
     pub fn set_account_disabled(&self, account_id: i64, disabled: bool) -> StorageResult<()> {
@@ -189,7 +362,7 @@ impl Storage {
       FROM accounts
       ORDER BY id ASC
       "#;
-        let mut stmt = conn.prepare(sql)?;
+        let mut stmt = conn.prepare_cached(sql)?;
 
         let accounts = stmt
             .query_map([], |row| {
@@ -219,59 +392,16 @@ impl Storage {
 
     pub fn upsert_mailbox(&self, input: &UpsertMailboxInput) -> StorageResult<i64> {
         let mut conn = self.open_connection()?;
-        let now = now_rfc3339();
         let tx = conn.transaction()?;
-
-        // Preserve user-driven enablement if mailbox already exists.
-        let sql = r#"
-      INSERT INTO mailboxes (
-        account_id,
-        imap_name,
-        delimiter,
-        attributes,
-        sync_enabled,
-        hard_excluded,
-        uidvalidity,
-        last_seen_uid,
-        last_sync_at,
-        last_error,
-        created_at,
-        updated_at
-      ) VALUES (
-        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?10
-      )
-      ON CONFLICT(account_id, imap_name) DO UPDATE SET
-        delimiter = excluded.delimiter,
-        attributes = excluded.attributes,
-        hard_excluded = excluded.hard_excluded,
-        uidvalidity = coalesce(excluded.uidvalidity, uidvalidity),
-        updated_at = excluded.updated_at
-      "#;
-        tx.execute(
-            sql,
-            params![
-                input.account_id,
-                input.imap_name,
-                input.delimiter,
-                input.attributes,
-                bool_to_int(input.sync_enabled),
-                bool_to_int(input.hard_excluded),
-                input.uidvalidity.map(|v| v as i64),
-                input.last_seen_uid as i64,
-                now,
-                now
-            ],
-        )?;
-
-        let mailbox_id = mailbox_id_by_name_tx(&tx, input.account_id, &input.imap_name)?;
+        let id = upsert_mailbox_tx(&tx, input)?;
         tx.commit()?;
-        Ok(mailbox_id)
+        Ok(id)
     }
 
     /// Return a single mailbox row by id, or `None` if it does not exist.
     pub fn get_mailbox_by_id(&self, mailbox_id: i64) -> StorageResult<Option<MailboxRow>> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, account_id, imap_name, delimiter, attributes, \
              sync_enabled, hard_excluded, uidvalidity, last_seen_uid, \
              last_sync_at, last_error, created_at, updated_at \
@@ -349,7 +479,7 @@ impl Storage {
 
     pub fn list_mailboxes(&self, account_id: i64) -> StorageResult<Vec<MailboxRow>> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"
       SELECT
         id,
@@ -442,6 +572,9 @@ impl Storage {
         )?;
 
         let blob_id = message_blob_id_by_sha256_tx(&tx, &input.sha256)?;
+        if tx.changes() > 0 {
+            set_attachment_metadata(&tx, blob_id, &input.raw_mime)?;
+        }
         tx.commit()?;
         Ok(blob_id)
     }
@@ -502,6 +635,9 @@ impl Storage {
         let blob_is_new = tx.changes() > 0;
 
         let blob_id = message_blob_id_by_sha256_tx(&tx, &blob_input.sha256)?;
+        if blob_is_new {
+            set_attachment_metadata(&tx, blob_id, &blob_input.raw_mime)?;
+        }
 
         // Build full location input with the resolved blob_id.
         let full_location = UpsertMessageLocationInput {
@@ -551,7 +687,7 @@ impl Storage {
 
         match build_fts5_query(user_query) {
             Some(fts_query) => {
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     r#"
               SELECT
                 mb.id,
@@ -583,7 +719,7 @@ impl Storage {
             }
             None => {
                 // No valid search tokens — return most recent messages.
-                let mut stmt = conn.prepare(
+                let mut stmt = conn.prepare_cached(
                     r#"
               SELECT
                 id,
@@ -649,132 +785,100 @@ impl Storage {
         offset: usize,
         sort_order: MessageListSortOrder,
     ) -> StorageResult<Vec<MessageLocationListRow>> {
+        self.query_message_locations(&MessageQuery {
+            account_id,
+            mailbox_name,
+            user_query,
+            limit,
+            offset,
+            sort_order,
+            ..Default::default()
+        })
+    }
+
+    pub fn query_message_locations(
+        &self,
+        filters: &MessageQuery<'_>,
+    ) -> StorageResult<Vec<MessageLocationListRow>> {
+        use rusqlite::types::ToSql;
         let conn = self.open_connection()?;
-        let order_by_clause = match sort_order {
-            MessageListSortOrder::NewestFirst => {
-                "coalesce(ml.internal_date, mb.date_header, mb.imported_at) DESC, ml.id DESC"
-            }
-            MessageListSortOrder::OldestFirst => {
-                "coalesce(ml.internal_date, mb.date_header, mb.imported_at) ASC, ml.id ASC"
-            }
-        };
-
-        match build_fts5_query(user_query) {
-            Some(fts_query) => {
-                let query = format!(
-                    r#"
-              SELECT
-                ml.id,
-                ml.message_blob_id,
-                mb.subject,
-                mb.from_address,
-                coalesce(mb.date_header, ml.internal_date) AS date_header,
-                substr(coalesce(mb.body_text, ''), 1, 200) AS snippet,
-                a.id,
-                a.email_address,
-                m.id,
-                m.imap_name
-              FROM messages_fts
-              JOIN message_blobs mb ON mb.id = messages_fts.rowid
-              JOIN message_locations ml ON ml.message_blob_id = mb.id
-              JOIN mailboxes m ON m.id = ml.mailbox_id
-              JOIN accounts a ON a.id = ml.account_id
-              WHERE messages_fts MATCH ?1
-                AND ml.gone_from_server_at IS NULL
-                AND a.disabled = 0
-                AND (?2 IS NULL OR m.imap_name = ?2 COLLATE NOCASE)
-                AND (?3 IS NULL OR ml.account_id = ?3)
-              ORDER BY {order_by_clause}
-              LIMIT ?4 OFFSET ?5
-              "#,
-                );
-                let mut stmt = conn.prepare(&query)?;
-
-                let rows = stmt
-                    .query_map(
-                        params![
-                            fts_query,
-                            mailbox_name,
-                            account_id,
-                            limit as i64,
-                            offset as i64
-                        ],
-                        |row| {
-                            Ok(MessageLocationListRow {
-                                id: row.get(0)?,
-                                message_blob_id: row.get(1)?,
-                                subject: row.get(2)?,
-                                from_address: row.get(3)?,
-                                date_header: row.get(4)?,
-                                snippet: row.get(5)?,
-                                account_id: row.get(6)?,
-                                account_email_address: row.get(7)?,
-                                mailbox_id: row.get(8)?,
-                                mailbox_name: row.get(9)?,
-                            })
-                        },
-                    )?
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok(rows)
-            }
-            None => {
-                let query = format!(
-                    r#"
-              SELECT
-                ml.id,
-                ml.message_blob_id,
-                mb.subject,
-                mb.from_address,
-                coalesce(mb.date_header, ml.internal_date) AS date_header,
-                substr(coalesce(mb.body_text, ''), 1, 200) AS snippet,
-                a.id,
-                a.email_address,
-                m.id,
-                m.imap_name
-              FROM message_locations ml
-              JOIN message_blobs mb ON mb.id = ml.message_blob_id
-              JOIN mailboxes m ON m.id = ml.mailbox_id
-              JOIN accounts a ON a.id = ml.account_id
-              WHERE ml.gone_from_server_at IS NULL
-                AND a.disabled = 0
-                AND (?1 IS NULL OR m.imap_name = ?1 COLLATE NOCASE)
-                AND (?2 IS NULL OR ml.account_id = ?2)
-              ORDER BY {order_by_clause}
-              LIMIT ?3 OFFSET ?4
-              "#,
-                );
-                let mut stmt = conn.prepare(&query)?;
-
-                let rows = stmt
-                    .query_map(
-                        params![mailbox_name, account_id, limit as i64, offset as i64],
-                        |row| {
-                            Ok(MessageLocationListRow {
-                                id: row.get(0)?,
-                                message_blob_id: row.get(1)?,
-                                subject: row.get(2)?,
-                                from_address: row.get(3)?,
-                                date_header: row.get(4)?,
-                                snippet: row.get(5)?,
-                                account_id: row.get(6)?,
-                                account_email_address: row.get(7)?,
-                                mailbox_id: row.get(8)?,
-                                mailbox_name: row.get(9)?,
-                            })
-                        },
-                    )?
-                    .collect::<Result<Vec<_>, _>>()?;
-
-                Ok(rows)
-            }
+        let mut query = String::from("SELECT ml.id, ml.message_blob_id, mb.subject, mb.from_address, coalesce(mb.date_header, ml.internal_date), substr(coalesce(mb.body_text,''),1,200), a.id, a.email_address, m.id, m.imap_name, ml.sort_timestamp, mb.has_attachments FROM message_locations ml JOIN message_blobs mb ON mb.id=ml.message_blob_id JOIN mailboxes m ON m.id=ml.mailbox_id JOIN accounts a ON a.id=ml.account_id");
+        let fts = build_fts5_query(filters.user_query);
+        if fts.is_some() {
+            query.push_str(" JOIN messages_fts ON messages_fts.rowid=mb.id");
         }
+        query.push_str(" WHERE 1=1");
+        let mut values: Vec<Box<dyn ToSql>> = vec![];
+        let mut add = |clause: &str, value: Box<dyn ToSql>| {
+            query.push_str(clause);
+            values.push(value);
+        };
+        if let Some(value) = fts {
+            add(" AND messages_fts MATCH ?", Box::new(value));
+        }
+        if let Some(value) = filters.account_id {
+            add(" AND ml.account_id=?", Box::new(value));
+        }
+        if let Some(value) = filters.mailbox_name {
+            add(
+                " AND m.imap_name=? COLLATE NOCASE",
+                Box::new(value.to_string()),
+            );
+        }
+        if let Some(value) = filters.date_from {
+            add(" AND ml.sort_timestamp>=?", Box::new(value));
+        }
+        if let Some(value) = filters.date_to {
+            add(" AND ml.sort_timestamp<?", Box::new(value));
+        }
+        if let Some(value) = filters.has_attachments {
+            add(" AND mb.has_attachments=?", Box::new(value));
+        }
+        let newest = filters.sort_order == MessageListSortOrder::NewestFirst;
+        let reverse = filters.before.is_some();
+        if let Some(cursor) = filters.after.or(filters.before) {
+            let op = if newest != reverse { "<" } else { ">" };
+            query.push_str(&format!(" AND (ml.sort_timestamp,ml.id) {op} (?,?)"));
+            values.push(Box::new(cursor.sort_timestamp));
+            values.push(Box::new(cursor.id));
+        }
+        let direction = if newest != reverse { "DESC" } else { "ASC" };
+        query.push_str(&format!(
+            " ORDER BY ml.sort_timestamp {direction}, ml.id {direction} LIMIT ? OFFSET ?"
+        ));
+        values.push(Box::new(filters.limit.clamp(1, 500) as i64));
+        values.push(Box::new(filters.offset as i64));
+        let refs: Vec<&dyn ToSql> = values.iter().map(|v| v.as_ref()).collect();
+        let mut stmt = conn.prepare_cached(&query)?;
+        let mut rows = stmt
+            .query_map(refs.as_slice(), |row| {
+                Ok(MessageLocationListRow {
+                    id: row.get(0)?,
+                    message_blob_id: row.get(1)?,
+                    subject: row.get(2)?,
+                    from_address: row.get(3)?,
+                    date_header: row.get(4)?,
+                    snippet: row.get(5)?,
+                    account_id: row.get(6)?,
+                    account_email_address: row.get(7)?,
+                    mailbox_id: row.get(8)?,
+                    mailbox_name: row.get(9)?,
+                    sort_timestamp: row.get(10)?,
+                    has_attachments: row.get(11)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if reverse {
+            rows.reverse();
+        }
+        Ok(rows)
     }
 
     pub fn get_message_blob_raw_mime(&self, message_blob_id: i64) -> StorageResult<MessageBlobRaw> {
         let conn = self.open_connection()?;
-        let mut stmt = conn
-            .prepare("SELECT sha256, stored_encoding, raw_mime FROM message_blobs WHERE id = ?1")?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT sha256, stored_encoding, raw_mime FROM message_blobs WHERE id = ?1",
+        )?;
 
         let row = stmt.query_row([message_blob_id], |row| {
             Ok((
@@ -798,7 +902,8 @@ impl Storage {
 
     pub fn list_message_blobs_for_export(&self) -> StorageResult<Vec<MessageBlobExportRow>> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare("SELECT id, sha256 FROM message_blobs ORDER BY id ASC")?;
+        let mut stmt =
+            conn.prepare_cached("SELECT id, sha256 FROM message_blobs ORDER BY id ASC")?;
 
         let rows = stmt
             .query_map([], |row| {
@@ -812,9 +917,85 @@ impl Storage {
         Ok(rows)
     }
 
-    pub fn list_events_for_export(&self) -> StorageResult<Vec<EventExportRow>> {
+    pub fn visit_raw_blobs(
+        &self,
+        selected: Option<&[i64]>,
+        mut visitor: impl FnMut(&MessageBlobRaw) -> StorageResult<()>,
+    ) -> StorageResult<()> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut query =
+            String::from("SELECT id,sha256,stored_encoding,raw_mime FROM message_blobs");
+        if let Some(ids) = selected {
+            query.push_str(&format!(
+                " WHERE id IN ({})",
+                vec!["?"; ids.len()].join(",")
+            ));
+        }
+        query.push_str(" ORDER BY id");
+        let mut stmt = conn.prepare_cached(&query)?;
+        let ids = selected.unwrap_or(&[]);
+        let mut rows = stmt.query(rusqlite::params_from_iter(ids.iter()))?;
+        let mut count = 0;
+        while let Some(row) = rows.next()? {
+            let encoding: String = row.get(2)?;
+            if encoding != STORED_ENCODING_RAW {
+                return Err(StorageError::UnsupportedStoredEncoding {
+                    stored_encoding: encoding,
+                });
+            }
+            let raw = MessageBlobRaw {
+                id: row.get(0)?,
+                sha256: row.get(1)?,
+                raw_mime: row.get(3)?,
+            };
+            if sha256_hex(&raw.raw_mime) != raw.sha256 {
+                return Err(StorageError::InvalidArchive(format!(
+                    "Email {} does not match its stored hash",
+                    raw.id
+                )));
+            }
+            visitor(&raw)?;
+            count += 1;
+        }
+        if selected.is_some() && count != ids.len() {
+            return Err(StorageError::InvalidArchive(
+                "Some selected messages no longer exist".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn set_sync_interval_secs(&self, seconds: u64) -> StorageResult<()> {
+        self.open_connection()?.execute("INSERT INTO schema_meta(key,value) VALUES('sync_interval_secs',?1) ON CONFLICT(key) DO UPDATE SET value=excluded.value",[seconds.to_string()])?;
+        Ok(())
+    }
+    pub fn sync_interval_secs(&self) -> StorageResult<u64> {
+        let value: Option<String> = self
+            .open_connection()?
+            .query_row(
+                "SELECT value FROM schema_meta WHERE key='sync_interval_secs'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(value.and_then(|v| v.parse().ok()).unwrap_or(300))
+    }
+
+    pub fn list_events_for_export(&self) -> StorageResult<Vec<EventExportRow>> {
+        let mut result = Vec::new();
+        self.visit_events_for_export(|row| {
+            result.push(row.clone());
+            Ok(())
+        })?;
+        Ok(result)
+    }
+
+    pub fn visit_events_for_export(
+        &self,
+        mut visitor: impl FnMut(&EventExportRow) -> StorageResult<()>,
+    ) -> StorageResult<()> {
+        let conn = self.open_connection()?;
+        let mut stmt = conn.prepare_cached(
             r#"
       SELECT
         id,
@@ -830,29 +1011,39 @@ impl Storage {
       ORDER BY id ASC
       "#,
         )?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(EventExportRow {
-                    id: row.get(0)?,
-                    occurred_at: row.get(1)?,
-                    kind: row.get(2)?,
-                    account_id: row.get(3)?,
-                    mailbox_id: row.get(4)?,
-                    message_blob_id: row.get(5)?,
-                    detail: row.get(6)?,
-                    prev_hash: row.get(7)?,
-                    hash: row.get(8)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(rows)
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let value = EventExportRow {
+                id: row.get(0)?,
+                occurred_at: row.get(1)?,
+                kind: row.get(2)?,
+                account_id: row.get(3)?,
+                mailbox_id: row.get(4)?,
+                message_blob_id: row.get(5)?,
+                detail: row.get(6)?,
+                prev_hash: row.get(7)?,
+                hash: row.get(8)?,
+            };
+            visitor(&value)?;
+        }
+        Ok(())
     }
 
     pub fn list_auditor_index_rows(&self) -> StorageResult<Vec<AuditorIndexRow>> {
+        let mut result = Vec::new();
+        self.visit_auditor_index_rows(|row| {
+            result.push(row.clone());
+            Ok(())
+        })?;
+        Ok(result)
+    }
+
+    pub fn visit_auditor_index_rows(
+        &self,
+        mut visitor: impl FnMut(&AuditorIndexRow) -> StorageResult<()>,
+    ) -> StorageResult<()> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"
       SELECT
         a.id AS account_id,
@@ -878,35 +1069,31 @@ impl Storage {
       ORDER BY a.id ASC, m.imap_name ASC, ml.uid ASC
       "#,
         )?;
-
-        let rows = stmt
-            .query_map([], |row| {
-                Ok(AuditorIndexRow {
-                    account_id: row.get(0)?,
-                    account_label: row.get(1)?,
-                    mailbox_name: row.get(2)?,
-                    uidvalidity: row.get::<_, i64>(3)? as u32,
-                    uid: row.get::<_, i64>(4)? as u32,
-                    internal_date: row.get(5)?,
-                    flags: row.get(6)?,
-                    message_blob_id: row.get(7)?,
-                    sha256: row.get(8)?,
-                    message_id: row.get(9)?,
-                    date_header: row.get(10)?,
-                    from_address: row.get(11)?,
-                    to_addresses: row.get(12)?,
-                    cc_addresses: row.get(13)?,
-                    subject: row.get(14)?,
-                    imported_at: row.get(15)?,
-                })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(rows)
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            let value = AuditorIndexRow {
+                account_id: row.get(0)?,
+                account_label: row.get(1)?,
+                mailbox_name: row.get(2)?,
+                uidvalidity: row.get::<_, i64>(3)? as u32,
+                uid: row.get::<_, i64>(4)? as u32,
+                internal_date: row.get(5)?,
+                flags: row.get(6)?,
+                message_blob_id: row.get(7)?,
+                sha256: row.get(8)?,
+                message_id: row.get(9)?,
+                date_header: row.get(10)?,
+                from_address: row.get(11)?,
+                to_addresses: row.get(12)?,
+                cc_addresses: row.get(13)?,
+                subject: row.get(14)?,
+                imported_at: row.get(15)?,
+            };
+            visitor(&value)?;
+        }
+        Ok(())
     }
 
-    /// Record a `sync_finished` event that includes the current archive state
-    /// (root hash and blob count) as an integrity checkpoint in the hash chain.
     pub fn create_sync_finished_event(
         &self,
         account_id: i64,
@@ -915,11 +1102,13 @@ impl Storage {
         messages_gone: u64,
     ) -> StorageResult<()> {
         let mut conn = self.open_connection()?;
-        let mut tx = conn.transaction()?;
+        let mut tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
         // Snapshot the archive state inside the transaction for consistency.
-        let root_hash = compute_message_blobs_root_hash(&tx)?;
-        let blob_count = count_rows(&tx, "message_blobs")?;
+        let root = self.cached_root_snapshot(&tx)?;
+        let root_hash = root.hash;
+        let blob_count = root.count;
+        let max_blob_id = root.max_id;
 
         let input = InsertEventInput {
             occurred_at: now_rfc3339(),
@@ -928,12 +1117,13 @@ impl Storage {
             mailbox_id: None,
             message_blob_id: None,
             detail: format!(
-                r#"{{"status":"{}","messages_imported":{},"messages_gone":{},"root_hash":"{}","blob_count":{}}}"#,
+                r#"{{"status":"{}","messages_imported":{},"messages_gone":{},"root_hash":"{}","blob_count":{},"max_blob_id":{}}}"#,
                 escape_json_string(status),
                 messages_imported,
                 messages_gone,
                 root_hash,
                 blob_count,
+                max_blob_id,
             ),
         };
         insert_event_tx(&mut tx, &input)?;
@@ -981,7 +1171,7 @@ impl Storage {
             ),
         };
 
-        let mut stmt = conn.prepare(&sql)?;
+        let mut stmt = conn.prepare_cached(&sql)?;
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
             params.iter().map(|p| p.as_ref()).collect();
         let rows = stmt.query_map(param_refs.as_slice(), |row| {
@@ -1022,8 +1212,9 @@ impl Storage {
     /// given `kind`, or `None` if no such event exists.
     pub fn last_event_time_by_kind(&self, kind: &str) -> StorageResult<Option<String>> {
         let conn = self.open_connection()?;
-        let mut stmt = conn
-            .prepare("SELECT occurred_at FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT occurred_at FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1",
+        )?;
         let mut rows = stmt.query(rusqlite::params![kind])?;
         match rows.next()? {
             Some(row) => Ok(Some(row.get(0)?)),
@@ -1032,11 +1223,20 @@ impl Storage {
     }
 
     pub fn create_proof_snapshot(&self) -> StorageResult<ProofSnapshot> {
+        self.create_proof_snapshot_checked(|| Ok(()))
+    }
+
+    pub fn create_proof_snapshot_checked(
+        &self,
+        check: impl Fn() -> StorageResult<()>,
+    ) -> StorageResult<ProofSnapshot> {
+        check()?;
         let conn = self.open_connection()?;
         let created_at = now_rfc3339();
 
         let (last_event_id, last_event_hash) = {
-            let mut stmt = conn.prepare("SELECT id, hash FROM events ORDER BY id DESC LIMIT 1")?;
+            let mut stmt =
+                conn.prepare_cached("SELECT id, hash FROM events ORDER BY id DESC LIMIT 1")?;
             let mut rows = stmt.query([])?;
             match rows.next()? {
                 Some(row) => {
@@ -1054,7 +1254,7 @@ impl Storage {
         let message_locations_count = count_rows(&conn, "message_locations")?;
         let events_count = count_rows(&conn, "events")?;
 
-        let message_blobs_root_hash = compute_message_blobs_root_hash(&conn)?;
+        let message_blobs_root_hash = compute_message_blobs_root_hash_checked(&conn, &check)?;
 
         Ok(ProofSnapshot {
             created_at,
@@ -1070,8 +1270,16 @@ impl Storage {
     }
 
     pub fn verify_event_chain(&self) -> StorageResult<EventChainCheckResult> {
+        self.verify_event_chain_checked(|| Ok(()))
+    }
+
+    pub fn verify_event_chain_checked(
+        &self,
+        check: impl Fn() -> StorageResult<()>,
+    ) -> StorageResult<EventChainCheckResult> {
+        check()?;
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"
       SELECT
         id,
@@ -1093,6 +1301,7 @@ impl Storage {
         let mut checked_events = 0_u64;
 
         while let Some(row) = rows.next()? {
+            check()?;
             checked_events += 1;
 
             let event_id: i64 = row.get(0)?;
@@ -1146,8 +1355,17 @@ impl Storage {
         &self,
         max_mismatches: usize,
     ) -> StorageResult<IntegrityCheckResult> {
+        self.verify_message_blobs_integrity_checked(max_mismatches, || Ok(()))
+    }
+
+    pub fn verify_message_blobs_integrity_checked(
+        &self,
+        max_mismatches: usize,
+        check: impl Fn() -> StorageResult<()>,
+    ) -> StorageResult<IntegrityCheckResult> {
+        check()?;
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"
       SELECT id, sha256, stored_encoding, raw_mime
       FROM message_blobs
@@ -1160,6 +1378,7 @@ impl Storage {
         let mut mismatches = Vec::new();
 
         while let Some(row) = rows.next()? {
+            check()?;
             checked_message_blobs += 1;
 
             let message_blob_id: i64 = row.get(0)?;
@@ -1201,99 +1420,114 @@ impl Storage {
         })
     }
 
-    /// Full integrity verification: event chain + root hash checkpoint comparison.
-    ///
-    /// Returns an `IntegrityStatus` summarising whether the archive is intact.
+    /// Verify all scopes against one SQLite read snapshot, including persisted bytes.
     pub fn verify_integrity(&self) -> StorageResult<IntegrityStatus> {
-        let mut status = IntegrityStatus::default();
-        let mut issues: Vec<String> = Vec::new();
-
-        // 1. Verify the event hash chain.
-        let chain_result = self.verify_event_chain()?;
-        status.chain_checked_events = chain_result.checked_events;
-        status.chain_first_mismatch_event_id = chain_result.first_mismatch_event_id;
-        status.chain_ok = chain_result.first_mismatch_event_id.is_none();
-        if let Some(event_id) = chain_result.first_mismatch_event_id {
-            issues.push(format!("Event hash chain broken at event id {event_id}"));
-        }
-
-        // 2. Compute the current root hash and blob count.
-        let conn = self.open_connection()?;
-        status.current_root_hash = compute_message_blobs_root_hash(&conn)?;
-        status.current_blob_count = count_rows(&conn, "message_blobs")?;
-
-        // 3. Compare against the most recent sync_finished checkpoint.
-        let checkpoint = last_sync_finished_checkpoint(&conn)?;
-        if let Some((root_hash, blob_count)) = checkpoint {
-            status.checkpoint_root_hash = Some(root_hash.clone());
-            status.checkpoint_blob_count = Some(blob_count);
-
-            if root_hash != status.current_root_hash {
-                status.root_hash_ok = false;
-                issues.push(format!(
-                    "Root hash mismatch: checkpoint={root_hash}, current={}",
-                    status.current_root_hash
-                ));
-            } else if blob_count != status.current_blob_count {
-                status.root_hash_ok = false;
-                issues.push(format!(
-                    "Blob count mismatch: checkpoint={blob_count}, current={}",
-                    status.current_blob_count
-                ));
-            } else {
-                status.root_hash_ok = true;
+        let mut conn = self.open_connection()?;
+        let tx = conn.transaction()?;
+        let mut status = integrity_root_status(&tx, None)?;
+        status.checked_at = now_rfc3339();
+        status.root_checked_at = Some(status.checked_at.clone());
+        status.chain_checked_at = Some(status.checked_at.clone());
+        status.content_checked_at = Some(status.checked_at.clone());
+        status.schema_checked_at = Some(status.checked_at.clone());
+        status.chain_checked = true;
+        let mut previous_hash = "0".repeat(64);
+        let mut stmt = tx.prepare_cached("SELECT id,occurred_at,kind,account_id,mailbox_id,message_blob_id,detail,prev_hash,hash FROM events ORDER BY id")?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            status.chain_checked_events += 1;
+            let id: i64 = row.get(0)?;
+            let prev: String = row.get(7)?;
+            let hash: String = row.get(8)?;
+            let input = InsertEventInput {
+                occurred_at: row.get(1)?,
+                kind: row.get(2)?,
+                account_id: row.get(3)?,
+                mailbox_id: row.get(4)?,
+                message_blob_id: row.get(5)?,
+                detail: row
+                    .get::<_, Option<String>>(6)?
+                    .unwrap_or_else(|| "{}".into()),
+            };
+            if prev != previous_hash || hash != compute_event_hash(&previous_hash, &input) {
+                status.chain_first_mismatch_event_id = Some(id);
+                status
+                    .issues
+                    .push(format!("Event hash chain broken at event id {id}"));
+                break;
             }
-        } else {
-            // No checkpoint yet — root hash check is vacuously ok.
-            status.root_hash_ok = true;
+            previous_hash = hash;
         }
-
-        status.ok = status.chain_ok && status.root_hash_ok;
-        status.issues = issues;
-
+        status.chain_ok = status.chain_first_mismatch_event_id.is_none();
+        status.content_checked = true;
+        status.content_ok = true;
+        let mut stmt = tx.prepare_cached(
+            "SELECT id,sha256,stored_encoding,raw_mime FROM message_blobs ORDER BY id",
+        )?;
+        let mut rows = stmt.query([])?;
+        while let Some(row) = rows.next()? {
+            status.content_checked_blobs += 1;
+            let id: i64 = row.get(0)?;
+            let stored: String = row.get(1)?;
+            let encoding: String = row.get(2)?;
+            let bytes: Vec<u8> = row.get(3)?;
+            if encoding != STORED_ENCODING_RAW || sha256_hex(&bytes) != stored {
+                status.content_ok = false;
+                if status.issues.len() < 100 {
+                    status.issues.push(format!(
+                        "Stored email content does not match its hash (message {id})"
+                    ));
+                }
+            }
+        }
+        status.schema_checked = true;
+        status.schema_ok = true;
+        for (table, message) in [
+            (
+                "message_blobs",
+                "Deleting archived email blobs is not permitted.",
+            ),
+            (
+                "events",
+                "Deleting events from the audit log is not permitted.",
+            ),
+        ] {
+            let name = format!("prevent_delete_{table}");
+            let sql: Option<String> = tx
+                .query_row(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=? AND tbl_name=?",
+                    params![name, table],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let expected=format!("CREATE TRIGGER {name} BEFORE DELETE ON {table} BEGIN SELECT RAISE(ABORT, '{message}'); END");
+            let normalize = |s: &str| {
+                s.split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .to_ascii_uppercase()
+            };
+            if sql.is_none_or(|sql| normalize(&sql) != normalize(&expected)) {
+                status.schema_ok = false;
+            }
+        }
+        if !status.schema_ok {
+            status
+                .issues
+                .push("Archive deletion guards are missing or changed".into());
+        }
+        status.ok = status.chain_ok && status.content_ok && status.schema_ok && status.root_hash_ok;
         Ok(status)
     }
 
-    /// Quick integrity check: only compare the root hash against the latest
-    /// `sync_finished` checkpoint.  Skips the full event chain walk.
+    /// A quick result leaves chain/content/schema scopes explicitly unchecked.
     pub fn verify_root_hash_only(&self) -> StorageResult<IntegrityStatus> {
-        let mut status = IntegrityStatus::default();
-        let mut issues: Vec<String> = Vec::new();
-
-        // Skip chain verification — mark as ok by default.
-        status.chain_ok = true;
-
-        let conn = self.open_connection()?;
-        status.current_root_hash = compute_message_blobs_root_hash(&conn)?;
-        status.current_blob_count = count_rows(&conn, "message_blobs")?;
-
-        let checkpoint = last_sync_finished_checkpoint(&conn)?;
-        if let Some((root_hash, blob_count)) = checkpoint {
-            status.checkpoint_root_hash = Some(root_hash.clone());
-            status.checkpoint_blob_count = Some(blob_count);
-
-            if root_hash != status.current_root_hash {
-                status.root_hash_ok = false;
-                issues.push(format!(
-                    "Root hash mismatch: checkpoint={root_hash}, current={}",
-                    status.current_root_hash
-                ));
-            } else if blob_count != status.current_blob_count {
-                status.root_hash_ok = false;
-                issues.push(format!(
-                    "Blob count mismatch: checkpoint={blob_count}, current={}",
-                    status.current_blob_count
-                ));
-            } else {
-                status.root_hash_ok = true;
-            }
-        } else {
-            status.root_hash_ok = true;
-        }
-
-        status.ok = status.chain_ok && status.root_hash_ok;
-        status.issues = issues;
-
+        let mut conn = self.open_connection()?;
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let mut status = integrity_root_status(&tx, Some(self.cached_root_snapshot(&tx)?))?;
+        status.checked_at = now_rfc3339();
+        status.root_checked_at = Some(status.checked_at.clone());
+        status.ok = false; // Other scopes have not been checked.
         Ok(status)
     }
 
@@ -1302,9 +1536,8 @@ impl Storage {
     /// Excludes locations where `gone_from_server_at` is set (deleted from server).
     pub fn count_message_locations_for_account(&self, account_id: i64) -> StorageResult<u64> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
-            "SELECT COUNT(*) FROM message_locations WHERE account_id = ?1 AND gone_from_server_at IS NULL",
-        )?;
+        let mut stmt =
+            conn.prepare_cached("SELECT COUNT(*) FROM message_locations WHERE account_id = ?1")?;
         let count: i64 = stmt.query_row([account_id], |row| row.get(0))?;
         Ok(count.max(0) as u64)
     }
@@ -1316,7 +1549,7 @@ impl Storage {
     /// any retention policy logic.
     pub fn get_archive_date_range(&self) -> StorageResult<ArchiveDateRange> {
         let conn = self.open_connection()?;
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"SELECT
                  MIN(COALESCE(NULLIF(ml.internal_date, ''), NULLIF(mb.date_header, ''))),
                  MAX(COALESCE(NULLIF(ml.internal_date, ''), NULLIF(mb.date_header, '')))
@@ -1346,7 +1579,7 @@ impl Storage {
         let events_count = count_rows(&conn, "events")?;
 
         // Accounts with enabled/disabled breakdown.
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "SELECT id, label, email_address, imap_host, disabled FROM accounts ORDER BY id",
         )?;
         let accounts = stmt
@@ -1362,7 +1595,7 @@ impl Storage {
             .collect::<Result<Vec<_>, _>>()?;
 
         // Mailbox state.
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"SELECT id, account_id, imap_name, sync_enabled, hard_excluded,
                       uidvalidity, last_seen_uid, last_sync_at,
                       substr(coalesce(last_error, ''), 1, 200)
@@ -1387,7 +1620,7 @@ impl Storage {
             .collect::<Result<Vec<_>, _>>()?;
 
         // Newest message locations joined with account/mailbox state.
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             r#"SELECT ml.id, ml.message_blob_id, ml.account_id, ml.mailbox_id,
                       ml.uidvalidity, ml.uid, ml.gone_from_server_at,
                       a.disabled, m.imap_name, mb.subject
@@ -1416,7 +1649,7 @@ impl Storage {
 
         // What the listing query (empty search, no account filter) actually returns.
         let listing_result_count: i64 = conn
-            .prepare(
+            .prepare_cached(
                 r#"SELECT COUNT(*)
                FROM message_locations ml
                JOIN message_blobs mb ON mb.id = ml.message_blob_id
@@ -1428,7 +1661,7 @@ impl Storage {
             .query_row([], |row| row.get(0))?;
 
         let inbox_listing_count: i64 = conn
-            .prepare(
+            .prepare_cached(
                 r#"SELECT COUNT(*)
                FROM message_locations ml
                JOIN message_blobs mb ON mb.id = ml.message_blob_id
@@ -1467,19 +1700,34 @@ impl Storage {
         Ok(updated as u64)
     }
 
-    fn open_connection(&self) -> StorageResult<Connection> {
-        if self.db_path.as_os_str() == ":memory:" {
-            let conn = Connection::open_in_memory()?;
-            apply_connection_pragmas(&conn, false)?;
-            conn.busy_timeout(DB_BUSY_TIMEOUT)?;
-            return Ok(conn);
-        }
+    fn open_connection(&self) -> StorageResult<MutexGuard<'_, Connection>> {
+        self.connection
+            .connection
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)
+    }
 
-        let flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE;
-        let conn = Connection::open_with_flags(&self.db_path, flags)?;
-        apply_connection_pragmas(&conn, true)?;
-        conn.busy_timeout(DB_BUSY_TIMEOUT)?;
-        Ok(conn)
+    /// Called only inside a fresh IMMEDIATE transaction: no external writer can
+    /// change the snapshot between data_version validation and cache use. Local
+    /// blob mutations invalidate via SQLite's update hook; rollback may cause a
+    /// harmless extra scan. Full content/chain checks always bypass this cache.
+    fn cached_root_snapshot(&self, conn: &Connection) -> StorageResult<RootSnapshot> {
+        let version: i64 = conn.pragma_query_value(None, "data_version", |row| row.get(0))?;
+        let revision = self.connection.blob_revision.load(Ordering::Relaxed);
+        let mut cache = self
+            .connection
+            .root_cache
+            .lock()
+            .map_err(|_| StorageError::LockPoisoned)?;
+        if let Some((cached_revision, cached_version, root)) = &*cache {
+            if *cached_revision == revision && *cached_version == version {
+                return Ok(root.clone());
+            }
+        }
+        let root = compute_root_snapshot(conn)?;
+        self.connection.root_scans.fetch_add(1, Ordering::Relaxed);
+        *cache = Some((revision, version, root.clone()));
+        Ok(root)
     }
 }
 
@@ -1687,12 +1935,36 @@ pub struct MessageLocationListRow {
     pub account_email_address: String,
     pub mailbox_id: i64,
     pub mailbox_name: String,
+    pub sort_timestamp: i64,
+    pub has_attachments: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MessageListSortOrder {
+    #[default]
     NewestFirst,
     OldestFirst,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct MessageCursor {
+    pub sort_timestamp: i64,
+    pub id: i64,
+}
+
+#[derive(Debug, Default)]
+pub struct MessageQuery<'a> {
+    pub account_id: Option<i64>,
+    pub mailbox_name: Option<&'a str>,
+    pub user_query: &'a str,
+    pub limit: usize,
+    pub offset: usize,
+    pub sort_order: MessageListSortOrder,
+    pub date_from: Option<i64>,
+    pub date_to: Option<i64>,
+    pub has_attachments: Option<bool>,
+    pub after: Option<MessageCursor>,
+    pub before: Option<MessageCursor>,
 }
 
 #[derive(Debug, Clone)]
@@ -1850,6 +2122,19 @@ pub struct EventChainCheckResult {
 pub struct IntegrityStatus {
     /// Whether the entire check passed without anomalies.
     pub ok: bool,
+    pub checked_at: String,
+    pub root_checked_at: Option<String>,
+    pub chain_checked_at: Option<String>,
+    pub content_checked_at: Option<String>,
+    pub schema_checked_at: Option<String>,
+    pub root_checked: bool,
+    pub chain_checked: bool,
+    pub content_checked: bool,
+    pub content_ok: bool,
+    pub content_checked_blobs: u64,
+    pub schema_checked: bool,
+    pub schema_ok: bool,
+    pub incomplete_sync: bool,
     /// Event chain verification result.
     pub chain_ok: bool,
     pub chain_checked_events: u64,
@@ -1862,6 +2147,57 @@ pub struct IntegrityStatus {
     pub current_blob_count: u64,
     /// Human-readable summary of any detected issues.
     pub issues: Vec<String>,
+}
+
+impl IntegrityStatus {
+    pub fn merge_checked(&mut self, next: Self) {
+        if next.root_checked {
+            self.root_checked_at = next.root_checked_at;
+            self.root_checked = true;
+            self.root_hash_ok = next.root_hash_ok;
+            self.current_root_hash = next.current_root_hash;
+            self.current_blob_count = next.current_blob_count;
+            self.checkpoint_root_hash = next.checkpoint_root_hash;
+            self.checkpoint_blob_count = next.checkpoint_blob_count;
+            self.incomplete_sync = next.incomplete_sync;
+        }
+        if next.chain_checked {
+            self.chain_checked_at = next.chain_checked_at;
+            self.chain_checked = true;
+            self.chain_ok = next.chain_ok;
+            self.chain_checked_events = next.chain_checked_events;
+            self.chain_first_mismatch_event_id = next.chain_first_mismatch_event_id;
+        }
+        if next.content_checked {
+            self.content_checked_at = next.content_checked_at;
+            self.content_checked = true;
+            self.content_ok = next.content_ok;
+            self.content_checked_blobs = next.content_checked_blobs;
+        }
+        if next.schema_checked {
+            self.schema_checked_at = next.schema_checked_at;
+            self.schema_checked = true;
+            self.schema_ok = next.schema_ok;
+        }
+        self.checked_at = next.checked_at;
+        // Preserve detailed failures until a complete verification succeeds.
+        if next.chain_checked && next.content_checked && next.schema_checked {
+            self.issues = next.issues;
+        } else {
+            for issue in next.issues {
+                if !self.issues.contains(&issue) {
+                    self.issues.push(issue);
+                }
+            }
+        }
+        self.ok = self.root_hash_ok
+            && self.chain_checked
+            && self.chain_ok
+            && self.content_checked
+            && self.content_ok
+            && self.schema_checked
+            && self.schema_ok;
+    }
 }
 
 pub const EVENT_KIND_TAMPERING_DETECTED: &str = "tampering_detected";
@@ -1923,6 +2259,7 @@ fn migrate(conn: &mut Connection) -> StorageResult<()> {
         // Fresh database — create the latest schema in one go.
         create_schema_v1(&tx)?;
         apply_schema_v2(&tx)?;
+        apply_schema_v3(&tx)?;
         set_schema_version(&tx, SCHEMA_VERSION)?;
         tx.commit()?;
         return Ok(());
@@ -1938,8 +2275,11 @@ fn migrate(conn: &mut Connection) -> StorageResult<()> {
     // Incremental migrations.
     if existing_version < 2 {
         apply_schema_v2(&tx)?;
-        set_schema_version(&tx, 2)?;
     }
+    if existing_version < 3 {
+        apply_schema_v3(&tx)?;
+    }
+    set_schema_version(&tx, SCHEMA_VERSION)?;
 
     tx.commit()?;
     Ok(())
@@ -1958,7 +2298,7 @@ fn create_schema_meta_table(tx: &Transaction<'_>) -> StorageResult<()> {
 }
 
 fn get_schema_version(tx: &Transaction<'_>) -> StorageResult<Option<i64>> {
-    let mut stmt = tx.prepare("SELECT value FROM schema_meta WHERE key = ?1")?;
+    let mut stmt = tx.prepare_cached("SELECT value FROM schema_meta WHERE key = ?1")?;
     let mut rows = stmt.query([SCHEMA_META_KEY_SCHEMA_VERSION])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
@@ -2133,6 +2473,58 @@ fn apply_schema_v2(tx: &Transaction<'_>) -> StorageResult<()> {
     Ok(())
 }
 
+fn parse_timestamp(value: &str) -> Option<i64> {
+    time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339)
+        .ok()
+        .or_else(|| {
+            time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc2822).ok()
+        })
+        .map(|v| v.unix_timestamp())
+}
+
+fn set_attachment_metadata(tx: &Transaction<'_>, id: i64, raw: &[u8]) -> StorageResult<()> {
+    let has_attachments = mail_parser::MessageParser::default()
+        .parse(raw)
+        .is_some_and(|m| m.attachments().next().is_some());
+    tx.execute(
+        "UPDATE message_blobs SET has_attachments = ?1 WHERE id = ?2",
+        params![has_attachments, id],
+    )?;
+    Ok(())
+}
+
+fn apply_schema_v3(tx: &Transaction<'_>) -> StorageResult<()> {
+    tx.execute_batch("ALTER TABLE message_blobs ADD COLUMN has_attachments INTEGER NOT NULL DEFAULT 0; ALTER TABLE message_locations ADD COLUMN sort_timestamp INTEGER NOT NULL DEFAULT 0;")?;
+    // One message at a time; existing raw bytes are never modified by the migration.
+    let mut blobs = tx.prepare_cached("SELECT id, raw_mime FROM message_blobs ORDER BY id")?;
+    let mut rows = blobs.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let raw: Vec<u8> = row.get(1)?;
+        set_attachment_metadata(tx, id, &raw)?;
+    }
+    let mut locations = tx.prepare_cached("SELECT ml.id, ml.internal_date, mb.date_header, mb.imported_at FROM message_locations ml JOIN message_blobs mb ON mb.id = ml.message_blob_id")?;
+    let mut rows = locations.query([])?;
+    while let Some(row) = rows.next()? {
+        let id: i64 = row.get(0)?;
+        let internal: Option<String> = row.get(1)?;
+        let header: Option<String> = row.get(2)?;
+        let imported: String = row.get(3)?;
+        let timestamp = internal
+            .as_deref()
+            .and_then(parse_timestamp)
+            .or_else(|| header.as_deref().and_then(parse_timestamp))
+            .or_else(|| parse_timestamp(&imported))
+            .unwrap_or(0);
+        tx.execute(
+            "UPDATE message_locations SET sort_timestamp = ?1 WHERE id = ?2",
+            params![timestamp, id],
+        )?;
+    }
+    tx.execute_batch("CREATE INDEX idx_locations_sort ON message_locations(sort_timestamp, id); CREATE INDEX idx_locations_account_sort ON message_locations(account_id, sort_timestamp, id); CREATE INDEX idx_events_kind_id ON events(kind, id); CREATE INDEX idx_events_blob_kind ON events(message_blob_id, kind, id);")?;
+    Ok(())
+}
+
 fn upsert_message_location_tx(
     tx: &Transaction<'_>,
     input: &UpsertMessageLocationInput,
@@ -2158,17 +2550,29 @@ fn upsert_message_location_tx(
         }
     }
 
+    let fallback: (Option<String>, String) = tx.query_row(
+        "SELECT date_header, imported_at FROM message_blobs WHERE id = ?1",
+        [input.message_blob_id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let sort_timestamp = input
+        .internal_date
+        .as_deref()
+        .and_then(parse_timestamp)
+        .or_else(|| fallback.0.as_deref().and_then(parse_timestamp))
+        .or_else(|| parse_timestamp(&fallback.1))
+        .unwrap_or(0);
     tx.execute(
         r#"
     INSERT INTO message_locations (
       message_blob_id, account_id, mailbox_id, uidvalidity, uid,
       internal_date, flags,
       provider_message_id, provider_thread_id, provider_labels, provider_meta_json,
-      first_seen_at, last_seen_at, gone_from_server_at
+      first_seen_at, last_seen_at, gone_from_server_at, sort_timestamp
     ) VALUES (
       ?1, ?2, ?3, ?4, ?5, ?6, ?7,
       ?8, ?9, ?10, ?11,
-      ?12, ?13, NULL
+      ?12, ?13, NULL, ?14
     )
     ON CONFLICT(mailbox_id, uidvalidity, uid) DO UPDATE SET
       message_blob_id = excluded.message_blob_id,
@@ -2179,7 +2583,8 @@ fn upsert_message_location_tx(
       provider_labels = excluded.provider_labels,
       provider_meta_json = excluded.provider_meta_json,
       last_seen_at = excluded.last_seen_at,
-      gone_from_server_at = NULL
+      gone_from_server_at = NULL,
+      sort_timestamp = excluded.sort_timestamp
     "#,
         params![
             input.message_blob_id,
@@ -2194,7 +2599,8 @@ fn upsert_message_location_tx(
             input.provider_labels,
             input.provider_meta_json,
             input.first_seen_at,
-            input.last_seen_at
+            input.last_seen_at,
+            sort_timestamp
         ],
     )?;
     Ok(())
@@ -2206,13 +2612,13 @@ fn mailbox_id_by_name_tx(
     imap_name: &str,
 ) -> StorageResult<i64> {
     let mut stmt =
-        tx.prepare("SELECT id FROM mailboxes WHERE account_id = ?1 AND imap_name = ?2")?;
+        tx.prepare_cached("SELECT id FROM mailboxes WHERE account_id = ?1 AND imap_name = ?2")?;
     let id = stmt.query_row(params![account_id, imap_name], |row| row.get(0))?;
     Ok(id)
 }
 
 fn message_blob_id_by_sha256_tx(tx: &Transaction<'_>, sha256: &str) -> StorageResult<i64> {
-    let mut stmt = tx.prepare("SELECT id FROM message_blobs WHERE sha256 = ?1")?;
+    let mut stmt = tx.prepare_cached("SELECT id FROM message_blobs WHERE sha256 = ?1")?;
     let id = stmt.query_row([sha256], |row| row.get(0))?;
     Ok(id)
 }
@@ -2250,7 +2656,7 @@ fn insert_event_tx(tx: &mut Transaction<'_>, input: &InsertEventInput) -> Storag
 }
 
 fn last_event_hash_tx(tx: &Transaction<'_>) -> StorageResult<Option<String>> {
-    let mut stmt = tx.prepare("SELECT hash FROM events ORDER BY id DESC LIMIT 1")?;
+    let mut stmt = tx.prepare_cached("SELECT hash FROM events ORDER BY id DESC LIMIT 1")?;
     let mut rows = stmt.query([])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
@@ -2298,7 +2704,7 @@ fn sha256_hex(data: &[u8]) -> String {
 /// Extract `root_hash` and `blob_count` from the most recent `sync_finished` event.
 fn last_sync_finished_checkpoint(conn: &Connection) -> StorageResult<Option<(String, u64)>> {
     let mut stmt =
-        conn.prepare("SELECT detail FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")?;
+        conn.prepare_cached("SELECT detail FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")?;
     let mut rows = stmt.query(rusqlite::params![EVENT_KIND_SYNC_FINISHED])?;
     let Some(row) = rows.next()? else {
         return Ok(None);
@@ -2308,8 +2714,8 @@ fn last_sync_finished_checkpoint(conn: &Connection) -> StorageResult<Option<(Str
     // Parse the JSON detail to extract root_hash and blob_count.
     // The detail format is: {"status":"...","messages_imported":N,"messages_gone":N,"root_hash":"...","blob_count":N}
     // We use serde_json for robust parsing.
-    let parsed: serde_json::Value =
-        serde_json::from_str(&detail).unwrap_or(serde_json::Value::Null);
+    let parsed: serde_json::Value = serde_json::from_str(&detail)
+        .map_err(|_| StorageError::InvalidArchive("malformed integrity checkpoint".into()))?;
 
     let root_hash = parsed
         .get("root_hash")
@@ -2319,8 +2725,102 @@ fn last_sync_finished_checkpoint(conn: &Connection) -> StorageResult<Option<(Str
 
     match (root_hash, blob_count) {
         (Some(rh), Some(bc)) => Ok(Some((rh, bc))),
-        _ => Ok(None), // Old-format event without checkpoint data.
+        _ if parsed.get("root_hash").is_none() && parsed.get("blob_count").is_none() => Ok(None), // Legacy status-only event.
+        _ => Err(StorageError::InvalidArchive(
+            "incomplete integrity checkpoint".into(),
+        )),
     }
+}
+
+fn compute_root_snapshot(conn: &Connection) -> StorageResult<RootSnapshot> {
+    Ok(RootSnapshot {
+        hash: compute_message_blobs_root_hash(conn)?,
+        count: count_rows(conn, "message_blobs")?,
+        max_id: conn.query_row("SELECT COALESCE(MAX(id),0) FROM message_blobs", [], |r| {
+            r.get(0)
+        })?,
+    })
+}
+
+fn integrity_root_status(
+    conn: &Connection,
+    cached: Option<RootSnapshot>,
+) -> StorageResult<IntegrityStatus> {
+    let root = match cached {
+        Some(root) => root,
+        None => compute_root_snapshot(conn)?,
+    };
+    let mut status = IntegrityStatus {
+        root_checked: true,
+        current_root_hash: root.hash,
+        current_blob_count: root.count,
+        root_hash_ok: true,
+        ..Default::default()
+    };
+    if let Some((root, count)) = last_sync_finished_checkpoint(conn)? {
+        status.checkpoint_root_hash = Some(root.clone());
+        status.checkpoint_blob_count = Some(count);
+        if root != status.current_root_hash || count != status.current_blob_count {
+            status.incomplete_sync = checkpoint_has_valid_ingestion_tail(conn, &root, count)?;
+            status.root_hash_ok = status.incomplete_sync;
+            if !status.root_hash_ok {
+                status.issues.push("Archive state differs from its checkpoint and cannot be explained by interrupted ingestion".into());
+            }
+        }
+    }
+    Ok(status)
+}
+
+fn checkpoint_has_valid_ingestion_tail(
+    conn: &Connection,
+    root: &str,
+    count: u64,
+) -> StorageResult<bool> {
+    let checkpoint: (i64, String) = conn.query_row(
+        "SELECT id,detail FROM events WHERE kind='sync_finished' ORDER BY id DESC LIMIT 1",
+        [],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let parsed: serde_json::Value = serde_json::from_str(&checkpoint.1)
+        .map_err(|_| StorageError::InvalidArchive("malformed integrity checkpoint".into()))?;
+    let boundary = parsed.get("max_blob_id").and_then(|v| v.as_i64());
+    let mut stmt = conn.prepare_cached("SELECT e.message_blob_id,e.detail,mb.sha256 FROM events e LEFT JOIN message_blobs mb ON mb.id=e.message_blob_id WHERE e.kind='email_archived' AND e.id>? ORDER BY e.id")?;
+    let mut rows = stmt.query([checkpoint.0])?;
+    let mut ids = std::collections::HashSet::new();
+    while let Some(row) = rows.next()? {
+        let id: Option<i64> = row.get(0)?;
+        let detail: Option<String> = row.get(1)?;
+        let hash: Option<String> = row.get(2)?;
+        let Some(id) = id else { return Ok(false) };
+        if boundary.is_some_and(|b| id <= b) || !ids.insert(id) {
+            return Ok(false);
+        }
+        let detail = detail.and_then(|d| serde_json::from_str::<serde_json::Value>(&d).ok());
+        if hash.as_deref().is_none()
+            || detail
+                .as_ref()
+                .and_then(|v| v.get("sha256"))
+                .and_then(|v| v.as_str())
+                != hash.as_deref()
+        {
+            return Ok(false);
+        }
+    }
+    if ids.is_empty() || count_rows(conn, "message_blobs")? != count + ids.len() as u64 {
+        return Ok(false);
+    }
+    let mut stmt = conn.prepare_cached("SELECT mb.sha256 FROM message_blobs mb WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.message_blob_id=mb.id AND e.kind='email_archived' AND e.id>?) ORDER BY mb.sha256")?;
+    let mut rows = stmt.query([checkpoint.0])?;
+    use sha2::Digest;
+    let mut hasher = sha2::Sha256::new();
+    let mut previous_count = 0_u64;
+    while let Some(row) = rows.next()? {
+        let hash: String = row.get(0)?;
+        hasher.update(hash.as_bytes());
+        hasher.update(b"\n");
+        previous_count += 1;
+    }
+    Ok(previous_count == count && hex::encode(hasher.finalize()) == root)
 }
 
 fn count_rows(conn: &Connection, table: &str) -> StorageResult<u64> {
@@ -2333,19 +2833,27 @@ fn count_rows(conn: &Connection, table: &str) -> StorageResult<u64> {
         _ => return Ok(0),
     };
 
-    let mut stmt = conn.prepare(query)?;
+    let mut stmt = conn.prepare_cached(query)?;
     let count: i64 = stmt.query_row([], |row| row.get(0))?;
     Ok(count.max(0) as u64)
 }
 
 fn compute_message_blobs_root_hash(conn: &Connection) -> StorageResult<String> {
+    compute_message_blobs_root_hash_checked(conn, &|| Ok(()))
+}
+
+fn compute_message_blobs_root_hash_checked(
+    conn: &Connection,
+    check: &impl Fn() -> StorageResult<()>,
+) -> StorageResult<String> {
     use sha2::Digest;
 
-    let mut stmt = conn.prepare("SELECT sha256 FROM message_blobs ORDER BY sha256 ASC")?;
+    let mut stmt = conn.prepare_cached("SELECT sha256 FROM message_blobs ORDER BY sha256 ASC")?;
     let mut rows = stmt.query([])?;
     let mut hasher = sha2::Sha256::new();
 
     while let Some(row) = rows.next()? {
+        check()?;
         let sha256: String = row.get(0)?;
         hasher.update(sha256.as_bytes());
         hasher.update(b"\n");
@@ -2419,9 +2927,114 @@ fn normalize_fts5_token(token: &str) -> Option<String> {
     Some(format!("\"{escaped}\"*"))
 }
 
+fn create_account_tx(tx: &Transaction<'_>, input: &CreateAccountInput) -> StorageResult<i64> {
+    let now = now_rfc3339();
+    tx.execute(
+        r#"
+      INSERT INTO accounts (
+        label,
+        email_address,
+        provider_kind,
+        imap_host,
+        imap_port,
+        imap_tls,
+        imap_username,
+        auth_kind,
+        secret_ref,
+        oauth_provider,
+        oauth_user_id,
+        oauth_tenant_id,
+        oauth_scopes,
+        oauth_meta_json,
+        mailbox_selection_mode,
+        created_at,
+        updated_at,
+        disabled
+      ) VALUES (
+        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9,
+        ?10, NULL, NULL, ?11, NULL,
+        ?12, ?13, ?14, 0
+      )
+      "#,
+        params![
+            input.label,
+            input.email_address,
+            input.provider_kind,
+            input.imap_host,
+            input.imap_port as i64,
+            bool_to_int(input.imap_tls),
+            input.imap_username,
+            input.auth_kind,
+            input.secret_ref,
+            input.oauth_provider,
+            input.oauth_scopes,
+            input.mailbox_selection_mode,
+            now,
+            now
+        ],
+    )?;
+
+    let account_id = tx.last_insert_rowid();
+
+    Ok(account_id)
+}
+fn upsert_mailbox_tx(tx: &Transaction<'_>, input: &UpsertMailboxInput) -> StorageResult<i64> {
+    let now = now_rfc3339();
+    // Preserve user-driven enablement if mailbox already exists.
+    let sql = r#"
+      INSERT INTO mailboxes (
+        account_id,
+        imap_name,
+        delimiter,
+        attributes,
+        sync_enabled,
+        hard_excluded,
+        uidvalidity,
+        last_seen_uid,
+        last_sync_at,
+        last_error,
+        created_at,
+        updated_at
+      ) VALUES (
+        ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, ?9, ?10
+      )
+      ON CONFLICT(account_id, imap_name) DO UPDATE SET
+        delimiter = excluded.delimiter,
+        attributes = excluded.attributes,
+        hard_excluded = excluded.hard_excluded,
+        uidvalidity = coalesce(excluded.uidvalidity, uidvalidity),
+        updated_at = excluded.updated_at
+      "#;
+    tx.execute(
+        sql,
+        params![
+            input.account_id,
+            input.imap_name,
+            input.delimiter,
+            input.attributes,
+            bool_to_int(input.sync_enabled),
+            bool_to_int(input.hard_excluded),
+            input.uidvalidity.map(|v| v as i64),
+            input.last_seen_uid as i64,
+            now,
+            now
+        ],
+    )?;
+
+    let mailbox_id = mailbox_id_by_name_tx(tx, input.account_id, &input.imap_name)?;
+
+    Ok(mailbox_id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn open_test_connection(storage: &Storage) -> Connection {
+        let conn = Connection::open(storage.db_path()).unwrap();
+        apply_connection_pragmas(&conn, true).unwrap();
+        conn.busy_timeout(DB_BUSY_TIMEOUT).unwrap();
+        conn
+    }
     use sha2::Digest;
 
     #[test]
@@ -2564,9 +3177,9 @@ mod tests {
 
         // We don't assert the exact hash value (that would be too brittle),
         // but we assert the chain shape: two events, second prev_hash matches first hash.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let mut stmt = conn
-            .prepare("SELECT id, prev_hash, hash FROM events ORDER BY id ASC")
+            .prepare_cached("SELECT id, prev_hash, hash FROM events ORDER BY id ASC")
             .unwrap();
         let rows: Vec<(i64, String, String)> = stmt
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
@@ -2707,7 +3320,7 @@ mod tests {
             .create_sync_finished_event(account_id, "ok", 3, 0)
             .unwrap();
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute(
             "UPDATE events SET prev_hash = ?1 WHERE id = 2",
             params!["1".repeat(64)],
@@ -2738,7 +3351,7 @@ mod tests {
             .create_sync_finished_event(account_id, "ok", 1, 0)
             .unwrap();
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute(
             "UPDATE events SET hash = ?1 WHERE id = 1",
             params!["0".repeat(64)],
@@ -2771,7 +3384,7 @@ mod tests {
             ))
             .unwrap();
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute(
             "UPDATE message_blobs SET raw_mime = ?1 WHERE id = ?2",
             params![b"tampered".to_vec(), blob_id],
@@ -2856,7 +3469,7 @@ mod tests {
             ))
             .unwrap();
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute(
             "UPDATE message_blobs SET raw_mime = ?1 WHERE id = ?2",
             params![b"tampered".to_vec(), blob_id_a],
@@ -2991,7 +3604,7 @@ mod tests {
     #[test]
     fn schema_version_returns_0_when_missing_or_invalid() {
         let storage = Storage::open_in_memory_for_tests().unwrap();
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
 
         conn.execute(
             "DELETE FROM schema_meta WHERE key = ?1",
@@ -3142,7 +3755,7 @@ mod tests {
         assert_eq!(raw.sha256, sha256);
         assert_eq!(raw.raw_mime, payload);
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute(
             "UPDATE message_blobs SET stored_encoding = ?1 WHERE id = ?2",
             params!["gzip", blob_id],
@@ -3215,7 +3828,7 @@ mod tests {
         let events = storage.list_events_for_export().unwrap();
         assert!(events.iter().any(|row| row.id == event_id));
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         assert_eq!(count_rows(&conn, "unknown").unwrap(), 0);
     }
 
@@ -3342,16 +3955,16 @@ mod tests {
         assert!(blob_id > 0);
 
         // Verify both blob AND location exist.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let blob_count: i64 = conn
-            .prepare("SELECT COUNT(*) FROM message_blobs WHERE id = ?1")
+            .prepare_cached("SELECT COUNT(*) FROM message_blobs WHERE id = ?1")
             .unwrap()
             .query_row([blob_id], |r| r.get(0))
             .unwrap();
         assert_eq!(blob_count, 1);
 
         let location_count: i64 = conn
-            .prepare("SELECT COUNT(*) FROM message_locations WHERE message_blob_id = ?1")
+            .prepare_cached("SELECT COUNT(*) FROM message_locations WHERE message_blob_id = ?1")
             .unwrap()
             .query_row([blob_id], |r| r.get(0))
             .unwrap();
@@ -3444,9 +4057,9 @@ mod tests {
         assert_eq!(blob_id_1, blob_id_2);
 
         // But two distinct message_locations.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let location_count: i64 = conn
-            .prepare("SELECT COUNT(*) FROM message_locations WHERE message_blob_id = ?1")
+            .prepare_cached("SELECT COUNT(*) FROM message_locations WHERE message_blob_id = ?1")
             .unwrap()
             .query_row([blob_id_1], |r| r.get(0))
             .unwrap();
@@ -3554,7 +4167,7 @@ mod tests {
     }
 
     #[test]
-    fn list_message_location_rows_hides_disabled_accounts() {
+    fn list_message_location_rows_preserves_disabled_account_archives() {
         let (storage, account_id, mailbox_id) = setup_test_account_with_inbox();
         let now = "2026-01-01T00:00:00Z".to_string();
 
@@ -3596,14 +4209,14 @@ mod tests {
         // Disable the account.
         storage.set_account_disabled(account_id, true).unwrap();
 
-        // Hidden after disabling.
+        // Removing synchronization access must preserve archive browsing.
         let hidden = storage
             .list_message_location_rows(None, None, "", 100, 0)
             .unwrap();
         assert_eq!(
             hidden.len(),
-            0,
-            "disabled account messages should be hidden"
+            1,
+            "disabled account messages must remain accessible"
         );
     }
 
@@ -3788,9 +4401,9 @@ mod tests {
         let blob_id = ingest_test_message(&storage, account_id, mailbox_id, "test", 1);
 
         // There should be exactly one email_archived event referencing this blob.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let count: i64 = conn
-            .prepare("SELECT COUNT(*) FROM events WHERE kind = ?1 AND message_blob_id = ?2")
+            .prepare_cached("SELECT COUNT(*) FROM events WHERE kind = ?1 AND message_blob_id = ?2")
             .unwrap()
             .query_row(rusqlite::params![EVENT_KIND_EMAIL_ARCHIVED, blob_id], |r| {
                 r.get(0)
@@ -3878,9 +4491,9 @@ mod tests {
             )
             .unwrap();
 
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let count: i64 = conn
-            .prepare("SELECT COUNT(*) FROM events WHERE kind = ?1")
+            .prepare_cached("SELECT COUNT(*) FROM events WHERE kind = ?1")
             .unwrap()
             .query_row(rusqlite::params![EVENT_KIND_EMAIL_ARCHIVED], |r| r.get(0))
             .unwrap();
@@ -3896,7 +4509,7 @@ mod tests {
         let blob_id = ingest_test_message(&storage, account_id, mailbox_id, "protected", 1);
 
         // Attempting to delete the blob should fail due to FK from events.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let result = conn.execute("DELETE FROM message_blobs WHERE id = ?1", [blob_id]);
         assert!(result.is_err(), "DELETE should be blocked by FK or trigger");
     }
@@ -3914,9 +4527,9 @@ mod tests {
             .unwrap();
 
         // Extract the detail JSON from the last sync_finished event.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let detail: String = conn
-            .prepare("SELECT detail FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")
+            .prepare_cached("SELECT detail FROM events WHERE kind = ?1 ORDER BY id DESC LIMIT 1")
             .unwrap()
             .query_row(rusqlite::params![EVENT_KIND_SYNC_FINISHED], |r| r.get(0))
             .unwrap();
@@ -3943,7 +4556,7 @@ mod tests {
         let blob_id = ingest_test_message(&storage, account_id, mailbox_id, "trigger test", 1);
 
         // Even without the FK event, the BEFORE DELETE trigger should prevent deletion.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let result = conn.execute("DELETE FROM message_blobs WHERE id = ?1", [blob_id]);
         assert!(result.is_err(), "DELETE should be blocked by trigger");
 
@@ -3960,7 +4573,7 @@ mod tests {
         ingest_test_message(&storage, account_id, mailbox_id, "event trigger test", 1);
 
         // Try to delete events.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let result = conn.execute(
             "DELETE FROM events WHERE kind = ?1",
             rusqlite::params![EVENT_KIND_EMAIL_ARCHIVED],
@@ -3991,13 +4604,15 @@ mod tests {
         );
 
         // Tamper: bypass trigger via DROP TRIGGER, delete an event, recreate trigger.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute_batch("DROP TRIGGER IF EXISTS prevent_delete_events")
             .unwrap();
 
         // Find and delete the second email_archived event.
         let second_event_id: i64 = conn
-            .prepare("SELECT id FROM events WHERE kind = ?1 ORDER BY id ASC LIMIT 1 OFFSET 1")
+            .prepare_cached(
+                "SELECT id FROM events WHERE kind = ?1 ORDER BY id ASC LIMIT 1 OFFSET 1",
+            )
             .unwrap()
             .query_row(rusqlite::params![EVENT_KIND_EMAIL_ARCHIVED], |r| r.get(0))
             .unwrap();
@@ -4042,7 +4657,7 @@ mod tests {
         assert!(status.ok, "Integrity should be ok before tampering");
 
         // Tamper: bypass triggers and FK, delete one blob.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         conn.execute_batch("DROP TRIGGER IF EXISTS prevent_delete_message_blobs")
             .unwrap();
         conn.execute_batch("DROP TRIGGER IF EXISTS prevent_delete_events")
@@ -4050,7 +4665,7 @@ mod tests {
 
         // First, delete events referencing blob 2 (to bypass FK).
         let blob_id_2: i64 = conn
-            .prepare("SELECT id FROM message_blobs ORDER BY id DESC LIMIT 1")
+            .prepare_cached("SELECT id FROM message_blobs ORDER BY id DESC LIMIT 1")
             .unwrap()
             .query_row([], |r| r.get(0))
             .unwrap();
@@ -4101,9 +4716,9 @@ mod tests {
         let storage = Storage::open_in_memory_for_tests().unwrap();
 
         // Verify triggers exist.
-        let conn = storage.open_connection().unwrap();
+        let conn = open_test_connection(&storage);
         let trigger_count: i64 = conn
-            .prepare(
+            .prepare_cached(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'prevent_delete_%'",
             )
             .unwrap()
@@ -4135,8 +4750,419 @@ mod tests {
 
         // No sync_finished event yet → quick check should pass vacuously.
         let status = storage.verify_root_hash_only().unwrap();
-        assert!(status.ok, "Should be ok without a checkpoint");
+        assert!(
+            !status.ok,
+            "Unchecked scopes must not report full verification"
+        );
         assert!(status.root_hash_ok);
         assert!(status.checkpoint_root_hash.is_none());
+    }
+    #[test]
+    fn missing_or_wrong_archive_is_never_created_or_overwritten() {
+        let path = test_db_path();
+        assert!(Storage::open_existing(&path).is_err());
+        assert!(!path.exists());
+        std::fs::write(&path, b"not an archive").unwrap();
+        assert!(Storage::open_existing(&path).is_err());
+        assert!(Storage::create_new(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"not an archive");
+    }
+    #[test]
+    fn migration_backfills_existing_message_without_changing_mime_or_hash() {
+        let path = test_db_path();
+        let mut conn = Connection::open(&path).unwrap();
+        let tx = conn.transaction().unwrap();
+        create_schema_meta_table(&tx).unwrap();
+        create_schema_v1(&tx).unwrap();
+        apply_schema_v2(&tx).unwrap();
+        set_schema_version(&tx, 2).unwrap();
+        let account = create_account_tx(
+            &tx,
+            &CreateAccountInput::classic_imap_password(
+                "Test".into(),
+                "a@b.c".into(),
+                "host".into(),
+                993,
+                true,
+                "user".into(),
+                "ref".into(),
+            ),
+        )
+        .unwrap();
+        let mailbox = upsert_mailbox_tx(
+            &tx,
+            &UpsertMailboxInput {
+                account_id: account,
+                imap_name: "INBOX".into(),
+                delimiter: None,
+                attributes: None,
+                sync_enabled: true,
+                hard_excluded: false,
+                uidvalidity: Some(1),
+                last_seen_uid: 0,
+            },
+        )
+        .unwrap();
+        let raw = b"MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nbody\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=a.bin\r\n\r\nfile\r\n--x--\r\n";
+        let hash = sha256_hex(raw);
+        tx.execute("INSERT INTO message_blobs(sha256,stored_encoding,raw_mime,raw_mime_size_bytes,stored_size_bytes,imported_at) VALUES(?,'raw',?,?,?,'2026-01-01T00:00:00Z')", params![hash,raw.as_slice(),raw.len(),raw.len()]).unwrap();
+        tx.execute("INSERT INTO message_locations(message_blob_id,account_id,mailbox_id,uidvalidity,uid,internal_date,first_seen_at,last_seen_at) VALUES(1,?,?,1,1,'2026-02-01T00:00:00Z','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z')", params![account,mailbox]).unwrap();
+        tx.commit().unwrap();
+        drop(conn);
+        let storage = Storage::open_existing(&path).unwrap();
+        assert_eq!(storage.schema_version().unwrap(), 3);
+        let conn = storage.open_connection().unwrap();
+        let stored: (Vec<u8>, String, bool) = conn
+            .query_row(
+                "SELECT raw_mime,sha256,has_attachments FROM message_blobs",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(stored.0, raw);
+        assert_eq!(stored.1, hash);
+        assert!(stored.2);
+        let timestamp: i64 = conn
+            .query_row("SELECT sort_timestamp FROM message_locations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(timestamp, parse_timestamp("2026-02-01T00:00:00Z").unwrap());
+    }
+    #[test]
+    fn duplicate_or_malformed_ingestion_tail_is_rejected() {
+        for detail in ["{}", "duplicate"] {
+            let (storage, account, mailbox) = setup_test_account_with_inbox();
+            ingest_test_message(&storage, account, mailbox, "old", 1);
+            storage
+                .create_sync_finished_event(account, "ok", 1, 0)
+                .unwrap();
+            let id = ingest_test_message(&storage, account, mailbox, "tail", 2);
+            let hash = storage.get_message_blob_raw_mime(id).unwrap().sha256;
+            storage
+                .append_event(&InsertEventInput {
+                    occurred_at: now_rfc3339(),
+                    kind: EVENT_KIND_EMAIL_ARCHIVED.into(),
+                    account_id: Some(account),
+                    mailbox_id: Some(mailbox),
+                    message_blob_id: Some(id),
+                    detail: if detail == "duplicate" {
+                        format!("{{\"sha256\":\"{hash}\"}}")
+                    } else {
+                        detail.into()
+                    },
+                })
+                .unwrap();
+            let status = storage.verify_integrity().unwrap();
+            assert!(status.chain_ok);
+            assert!(status.content_ok);
+            assert!(!status.root_hash_ok);
+            assert!(!status.incomplete_sync);
+        }
+    }
+    #[test]
+    fn full_check_hashes_raw_contents_and_quick_check_preserves_failure() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        let id = ingest_test_message(&storage, account, mailbox, "contents", 1);
+        storage
+            .create_sync_finished_event(account, "ok", 1, 0)
+            .unwrap();
+        let conn = open_test_connection(&storage);
+        conn.execute(
+            "UPDATE message_blobs SET raw_mime=? WHERE id=?",
+            params![b"changed".as_slice(), id],
+        )
+        .unwrap();
+        let mut status = storage.verify_integrity().unwrap();
+        assert!(!status.content_ok);
+        assert!(status.chain_ok);
+        let content_time = status.content_checked_at.clone();
+        status.merge_checked(storage.verify_root_hash_only().unwrap());
+        assert!(!status.ok);
+        assert!(!status.content_ok);
+        assert_eq!(status.content_checked_at, content_time);
+        conn.execute("UPDATE events SET hash='corrupt' WHERE id=1", [])
+            .unwrap();
+        let mut status = storage.verify_integrity().unwrap();
+        assert!(!status.chain_ok);
+        status.merge_checked(storage.verify_root_hash_only().unwrap());
+        assert!(!status.chain_ok);
+        assert!(!status.ok);
+    }
+    #[test]
+    fn interrupted_atomic_ingest_is_distinguished_from_unexplained_blob() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        ingest_test_message(&storage, account, mailbox, "first", 1);
+        storage
+            .create_sync_finished_event(account, "ok", 1, 0)
+            .unwrap();
+        ingest_test_message(&storage, account, mailbox, "interrupted", 2);
+        let status = storage.verify_integrity().unwrap();
+        assert!(status.ok, "{:?}", status.issues);
+        assert!(status.incomplete_sync);
+        let bytes = b"unexplained";
+        storage
+            .insert_message_blob_if_absent(&InsertMessageBlobInput::raw(
+                sha256_hex(bytes),
+                bytes.to_vec(),
+                now_rfc3339(),
+                MessageBlobMetadata::default(),
+            ))
+            .unwrap();
+        assert!(!storage.verify_integrity().unwrap().root_hash_ok);
+    }
+    #[test]
+    fn interrupted_tail_cannot_mask_missing_checkpointed_blob() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        let old = ingest_test_message(&storage, account, mailbox, "old", 1);
+        storage
+            .create_sync_finished_event(account, "ok", 1, 0)
+            .unwrap();
+        ingest_test_message(&storage, account, mailbox, "tail", 2);
+        let conn = open_test_connection(&storage);
+        conn.execute(
+            "UPDATE message_blobs SET sha256=? WHERE id=?",
+            params!["a".repeat(64), old],
+        )
+        .unwrap();
+        assert!(!storage.verify_integrity().unwrap().root_hash_ok);
+    }
+    #[test]
+    fn reopen_does_not_reinstall_missing_integrity_guards() {
+        let (storage, _, _) = setup_test_account_with_inbox();
+        let conn = open_test_connection(&storage);
+        conn.execute("DROP TRIGGER prevent_delete_events", [])
+            .unwrap();
+        let reopened = Storage::open_existing(storage.db_path()).unwrap();
+        assert!(!reopened.verify_integrity().unwrap().schema_ok);
+    }
+    #[test]
+    fn a_guard_name_and_raise_in_a_nonexecuting_trigger_do_not_pass_verification() {
+        let (storage, _, _) = setup_test_account_with_inbox();
+        let conn = open_test_connection(&storage);
+        conn.execute_batch("DROP TRIGGER prevent_delete_events; CREATE TRIGGER prevent_delete_events BEFORE DELETE ON events WHEN 0 BEGIN SELECT RAISE(ABORT,'Deleting events from the audit log is not permitted.'); END;").unwrap();
+        assert!(!storage.verify_integrity().unwrap().schema_ok);
+    }
+    #[test]
+    fn connections_are_shared_for_file_aliases_even_after_cache_eviction() {
+        let storage = Storage::open_in_memory_for_tests().unwrap();
+        let alias = test_db_path();
+        std::fs::hard_link(storage.db_path(), &alias).unwrap();
+        let keep = (0..7)
+            .map(|_| Storage::open_in_memory_for_tests().unwrap())
+            .collect::<Vec<_>>();
+        let reopened = Storage::open_existing(alias).unwrap();
+        assert!(Arc::ptr_eq(&storage.connection, &reopened.connection));
+        drop(keep);
+    }
+    #[test]
+    fn unchanged_root_is_reused_but_local_and_external_blob_mutations_invalidate_it() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        ingest_test_message(&storage, account, mailbox, "first", 1);
+        storage
+            .create_sync_finished_event(account, "ok", 1, 0)
+            .unwrap();
+        let scans = storage.connection.root_scans.load(Ordering::Relaxed);
+        for _ in 0..5 {
+            storage
+                .create_sync_finished_event(account, "ok", 0, 0)
+                .unwrap();
+            storage.verify_root_hash_only().unwrap();
+        }
+        assert_eq!(storage.connection.root_scans.load(Ordering::Relaxed), scans);
+        ingest_test_message(&storage, account, mailbox, "new", 2);
+        storage
+            .create_sync_finished_event(account, "ok", 1, 0)
+            .unwrap();
+        assert_eq!(
+            storage.connection.root_scans.load(Ordering::Relaxed),
+            scans + 1
+        );
+        let external = open_test_connection(&storage);
+        external
+            .execute(
+                "UPDATE message_blobs SET sha256=? WHERE id=(SELECT MIN(id) FROM message_blobs)",
+                ["a".repeat(64)],
+            )
+            .unwrap();
+        assert!(!storage.verify_root_hash_only().unwrap().root_hash_ok);
+        assert_eq!(
+            storage.connection.root_scans.load(Ordering::Relaxed),
+            scans + 2
+        );
+        // Raw-only tampering invalidates cached state and remains a content failure
+        // under full verification even if the set of stored hashes is unchanged.
+        external.execute("UPDATE message_blobs SET raw_mime=x'00' WHERE id=(SELECT MAX(id) FROM message_blobs)",[]).unwrap();
+        storage.verify_root_hash_only().unwrap();
+        assert_eq!(
+            storage.connection.root_scans.load(Ordering::Relaxed),
+            scans + 3
+        );
+        assert!(!storage.verify_integrity().unwrap().content_ok);
+    }
+    #[test]
+    fn snapshot_remains_consistent_after_live_ingestion() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        ingest_test_message(&storage, account, mailbox, "before", 1);
+        let path = test_db_path();
+        let snapshot = storage.snapshot_to(&path).unwrap();
+        ingest_test_message(&storage, account, mailbox, "after", 2);
+        assert_eq!(
+            snapshot
+                .create_proof_snapshot()
+                .unwrap()
+                .message_blobs_count,
+            1
+        );
+        assert_eq!(
+            storage.create_proof_snapshot().unwrap().message_blobs_count,
+            2
+        );
+        assert_eq!(snapshot.list_events_for_export().unwrap().len(), 1);
+    }
+    #[test]
+    fn snapshot_and_verification_can_be_interrupted_between_steps_and_rows() {
+        use std::cell::Cell;
+        let storage = Storage::open_in_memory_for_tests().unwrap();
+        let mut raw = vec![b'x'; 2 * 1024 * 1024];
+        for _ in 0..2 {
+            storage
+                .insert_message_blob_if_absent(&InsertMessageBlobInput::raw(
+                    sha256_hex(&raw),
+                    raw.clone(),
+                    now_rfc3339(),
+                    MessageBlobMetadata::default(),
+                ))
+                .unwrap();
+            raw.push(b'y');
+        }
+        for _ in 0..3 {
+            storage
+                .append_event(&InsertEventInput {
+                    occurred_at: "2026-01-01T00:00:00Z".into(),
+                    kind: "test".into(),
+                    account_id: None,
+                    mailbox_id: None,
+                    message_blob_id: None,
+                    detail: "{}".into(),
+                })
+                .unwrap();
+        }
+        let checks = Cell::new(0);
+        let check = || {
+            checks.set(checks.get() + 1);
+            if checks.get() >= 3 {
+                return Err(
+                    std::io::Error::new(std::io::ErrorKind::Interrupted, "canceled").into(),
+                );
+            }
+            Ok(())
+        };
+        let partial_path = test_db_path();
+        assert!(storage.snapshot_to_checked(&partial_path, check).is_err());
+        std::fs::remove_file(partial_path).unwrap();
+        assert_eq!(checks.get(), 3);
+        checks.set(0);
+        assert!(storage.create_proof_snapshot_checked(check).is_err());
+        checks.set(0);
+        assert!(storage.verify_event_chain_checked(check).is_err());
+        checks.set(0);
+        assert!(storage
+            .verify_message_blobs_integrity_checked(100, check)
+            .is_err());
+        assert_eq!(
+            storage.create_proof_snapshot().unwrap().message_blobs_count,
+            2
+        );
+    }
+    #[test]
+    fn keyset_pages_can_return_to_the_first_page_and_filters_precede_limit() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        for uid in 1..=110 {
+            ingest_test_message(&storage, account, mailbox, &format!("item {uid}"), uid);
+        }
+        let all = storage
+            .query_message_locations(&MessageQuery {
+                limit: 100,
+                ..Default::default()
+            })
+            .unwrap();
+        let anchor = all.last().unwrap();
+        let after = MessageCursor {
+            sort_timestamp: anchor.sort_timestamp,
+            id: anchor.id,
+        };
+        let second = storage
+            .query_message_locations(&MessageQuery {
+                limit: 100,
+                after: Some(after),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(second.len(), 10);
+        let first = second.first().unwrap();
+        let back = storage
+            .query_message_locations(&MessageQuery {
+                limit: 100,
+                before: Some(MessageCursor {
+                    sort_timestamp: first.sort_timestamp,
+                    id: first.id,
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            back.iter().map(|r| r.id).collect::<Vec<_>>(),
+            all.iter().map(|r| r.id).collect::<Vec<_>>()
+        );
+        let conn = open_test_connection(&storage);
+        conn.execute(
+            "UPDATE message_locations SET sort_timestamp=42 WHERE uid=1",
+            [],
+        )
+        .unwrap();
+        conn.execute("UPDATE message_blobs SET has_attachments=1 WHERE id=(SELECT message_blob_id FROM message_locations WHERE uid=1)",[]).unwrap();
+        let filtered = storage
+            .query_message_locations(&MessageQuery {
+                limit: 1,
+                date_to: Some(43),
+                has_attachments: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].sort_timestamp, 42);
+        let plan:String=conn.query_row("EXPLAIN QUERY PLAN SELECT id FROM message_locations ORDER BY sort_timestamp DESC,id DESC LIMIT 100",[],|r|r.get(3)).unwrap();
+        assert!(plan.contains("idx_locations_sort"));
+    }
+    #[test]
+    fn account_setup_rolls_back_if_a_folder_is_invalid() {
+        let storage = Storage::open_in_memory_for_tests().unwrap();
+        let input = CreateAccountInput::classic_imap_password(
+            "test".into(),
+            "a@b.c".into(),
+            "host".into(),
+            993,
+            true,
+            "user".into(),
+            "ref".into(),
+        );
+        let conn = open_test_connection(&storage);
+        conn.execute_batch("CREATE TRIGGER reject_folder BEFORE INSERT ON mailboxes BEGIN SELECT RAISE(ABORT,'test failure');END;").unwrap();
+        let mailbox = UpsertMailboxInput {
+            account_id: 0,
+            imap_name: "INBOX".into(),
+            delimiter: None,
+            attributes: None,
+            sync_enabled: true,
+            hard_excluded: false,
+            uidvalidity: None,
+            last_seen_uid: 0,
+        };
+        assert!(storage
+            .create_account_with_mailboxes(&input, &[mailbox])
+            .is_err());
+        assert!(storage.list_accounts().unwrap().is_empty());
+        assert_eq!(storage.event_count(None).unwrap(), 0);
     }
 }

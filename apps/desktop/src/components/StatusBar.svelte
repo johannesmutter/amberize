@@ -8,6 +8,7 @@
   const BYTES_PER_GB = 1024 * 1024 * 1024;
 
   let {
+    outcome = 'never',
     syncing = false,
     syncing_account = null,
     last_sync = null,
@@ -71,7 +72,7 @@
     return n.toLocaleString();
   }
 
-  let idle_text = $derived(`Synced ${format_relative_time(last_sync)}`);
+  let idle_text = $derived(outcome === 'ok' ? `Synced ${format_relative_time(last_sync)}` : outcome === 'partial' ? `Partial sync ${format_relative_time(last_sync)}` : outcome === 'error' ? `Sync failed ${format_relative_time(last_sync)}` : 'Not synced yet');
 
   /** @type {string} */
   let progress_text = $derived.by(() => {
@@ -165,7 +166,7 @@
       </div>
     {:else}
       <span class="status-text">
-        <span class="sync-icon">✓</span>
+        <span class="sync-icon">{outcome === 'ok' ? '✓' : outcome === 'never' ? '–' : '⚠'}</span>
         {idle_text}
       </span>
     {/if}

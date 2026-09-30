@@ -15,7 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validation:
+    uses: ./.github/workflows/ci.yml
   build:
+    needs: validation
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +72,19 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Require release signing configuration
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$UPDATER_KEY" || { echo "::error::Updater signing key is required"; exit 1; }
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              test -n "${!name}" || { echo "::error::Missing macOS signing/notarization setting: $name"; exit 1; }
+            done
+          fi
+
       - name: Build Tauri app (macOS signed + notarized)
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_ID != '' && env.APPLE_PASSWORD != '' && env.APPLE_TEAM_ID != ''
         uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
@@ -79,18 +95,18 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npx tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          args: --locked --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           tagName: ${{ github.ref_name }}
           releaseName: "Amberize ${{ github.ref_name }}"
           releaseBody: |
             See the full changelog in the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
           includeRelease: true
 
       - name: Build Tauri app
-        if: runner.os != 'macOS' || env.APPLE_CERTIFICATE == '' || env.APPLE_CERTIFICATE_PASSWORD == '' || env.APPLE_ID == '' || env.APPLE_PASSWORD == '' || env.APPLE_TEAM_ID == ''
+        if: runner.os != 'macOS'
         uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,12 +115,53 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npx tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          args: --locked --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
           tagName: ${{ github.ref_name }}
           releaseName: "Amberize ${{ github.ref_name }}"
           releaseBody: |
             See the full changelog in the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
           includeRelease: true
+
+      - name: Verify AppImage metadata (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=("$GITHUB_WORKSPACE/target/${{ matrix.target }}/release/bundle/appimage/"*.AppImage)
+          if [ "${#appimages[@]}" -eq 0 ]; then
+            echo "::error::No AppImage was built"
+            exit 1
+          fi
+          extraction_dir=$(mktemp -d)
+          trap 'rm -rf "$extraction_dir"' EXIT
+          for appimage in "${appimages[@]}"; do
+            (
+              cd "$extraction_dir"
+              "$appimage" --appimage-extract > /dev/null
+              appdir="$extraction_dir/squashfs-root"
+              desktop_files=("$appdir/"*.desktop)
+              if [ "${#desktop_files[@]}" -ne 1 ]; then
+                echo "::error::AppImage must contain exactly one root desktop file"
+                exit 1
+              fi
+              for metadata in "$appdir/.DirIcon" "${desktop_files[0]}"; do
+                if [ ! -s "$metadata" ]; then
+                  echo "::error::Missing or broken AppImage metadata: $metadata"
+                  exit 1
+                fi
+                case "$(realpath "$metadata")" in
+                  "$appdir/"*) ;;
+                  *) echo "::error::AppImage metadata points outside the package: $metadata"; exit 1 ;;
+                esac
+              done
+              if [ ! -x "$appdir/AppRun" ]; then
+                echo "::error::AppImage is missing an executable AppRun"
+                exit 1
+              fi
+            )
+            rm -rf "$extraction_dir/squashfs-root"
+          done

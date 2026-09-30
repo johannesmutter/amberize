@@ -57,6 +57,20 @@ describe('tauri_bridge', () => {
     expect(handler).toHaveBeenCalledWith({ event: 'e', payload: 1 });
   });
 
+  test('late listener registration is cleaned up after unmount and cannot signal readiness', async () => {
+    let resolve;
+    const pending = new Promise(r => { resolve = r; });
+    let callback;
+    const off = vi.fn(), handler = vi.fn(), ready = vi.fn();
+    vi.doMock('@tauri-apps/api/event', () => ({ listen: vi.fn((_name, fn) => { callback = fn; return pending; }) }));
+    const { listen_scoped } = await import('./tauri_bridge.js');
+    const dispose = listen_scoped({sync_progress: handler}, ready);
+    await vi.waitFor(() => expect(callback).toBeTypeOf('function'));
+    dispose();resolve(off);
+    await vi.waitFor(() => expect(off).toHaveBeenCalledOnce());
+    callback({payload:1});expect(handler).not.toHaveBeenCalled();expect(ready).not.toHaveBeenCalled();
+  });
+
   test('tauri_listen throws a readable error when event module fails', async () => {
     vi.doMock('@tauri-apps/api/event', () => ({
       listen: vi.fn(() => {
@@ -99,4 +113,3 @@ describe('tauri_bridge', () => {
     await expect(tauri_save_dialog({ title: 'x' })).rejects.toThrow('nope');
   });
 });
-
