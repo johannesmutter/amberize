@@ -143,7 +143,7 @@
 <div class="status-bar">
   <div class="status-content">
     {#if error}
-      <button type="button" class="error-message" onclick={handle_error_click}>
+      <button type="button" class="error-message" title={error} onclick={handle_error_click}>
         <span class="error-icon">⚠</span>
         <span class="error-text">{error}</span>
         {#if error_account_id != null}
@@ -281,6 +281,8 @@
 
   /* Error */
   .error-message {
+    max-width: 100%;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: var(--space-sm);
@@ -306,10 +308,15 @@
 
   .error-text {
     color: var(--color-error);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .error-action {
     color: var(--color-text-secondary);
+    flex-shrink: 0;
   }
 
   /* Stats toggle (centered) */

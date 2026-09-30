@@ -81,6 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => return Err("Usage: qa_fixture create|verify PATH [COUNT]".into()),
     };
     let integrity = storage.verify_integrity()?;
+    if !integrity.ok {
+        return Err("Synthetic archive failed full integrity verification".into());
+    }
     let proof = storage.create_proof_snapshot()?;
     let mut hashes = Vec::new();
     storage.visit_raw_blobs(None, |blob| {

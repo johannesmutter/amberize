@@ -191,7 +191,11 @@ jobs:
             sudo apt-get install -y xvfb
             sudo dpkg -i target/${{ matrix.target }}/release/bundle/deb/*.deb
             binary=$(command -v Amberize || command -v amberize)
-            xvfb-run -a python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+            dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+            appimage=$(find "target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -print -quit)
+            mkdir "$RUNNER_TEMP/amberize-appimage"
+            (cd "$RUNNER_TEMP/amberize-appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract > /dev/null)
+            dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
           elif [ "${{ runner.os }}" = Windows ]; then
             powershell -NoProfile -File scripts/install_windows_qa.ps1
           else

@@ -98,12 +98,17 @@ fn main() {
         ])
         .build(context)
         .expect("error while building tauri application")
-        .run(|_, event| {
-            if let tauri::RunEvent::ExitRequested {
+        .run(|app, event| match event {
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => menubar::show_main_window(app),
+            tauri::RunEvent::ExitRequested {
                 api, code: None, ..
-            } = event
-            {
-                api.prevent_exit();
+            } => api.prevent_exit(),
+            _ => {
+                let _ = app;
             }
         });
 }
