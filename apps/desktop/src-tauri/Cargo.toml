@@ -1,6 +1,6 @@
 [package]
 name = "amberize"
-version = "0.2.4-rc.5"
+version = "0.2.4-6"
 description = "Amberize - Seal emails in time"
 authors = ["Johannes Mutter"]
 license = "MIT"

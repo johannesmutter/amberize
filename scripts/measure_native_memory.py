@@ -5,6 +5,7 @@ Coalition ABI: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/
 import argparse
 import ctypes
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -28,6 +29,10 @@ def main():
 
     app_coalition = coalition(args.pid)
     assert app_coalition, "Cannot identify the app resource coalition"
+    assert app_coalition != coalition(os.getpid()), (
+        "The app shares the measuring process coalition; launch its bundle through macOS "
+        "Launch Services before measuring, otherwise unrelated parent processes are counted"
+    )
     members = []
     for line in subprocess.check_output(["ps", "-axo", "pid=,rss=,%cpu=,comm="], text=True).splitlines():
         fields = line.strip().split(None, 3)
