@@ -27,6 +27,10 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    # GitHub only exposes drafts to tokens with push access. This job downloads
+    # an existing draft and never creates, edits, or publishes a release.
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       CANDIDATE_TAG: ${{ inputs.tag || 'v0.2.4-6' }}
