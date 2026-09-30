@@ -3,6 +3,10 @@ name: Release
 on:
   push:
     tags: ["v*"]
+    branches: [codex/pre-release-qa-20260930]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/notarize_macos_dmgs.py
 
 # Needed so the workflow can create a draft GitHub Release
 # and upload assets via the `GITHUB_TOKEN`.
@@ -16,8 +20,10 @@ concurrency:
 
 jobs:
   validation:
+    if: startsWith(github.ref, 'refs/tags/v')
     uses: ./.github/workflows/ci.yml
   build:
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: validation
     strategy:
       fail-fast: false
@@ -170,6 +176,20 @@ jobs:
             rm -rf "$extraction_dir/squashfs-root"
           done
 
+      - name: Notarize and verify macOS disk images
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          folder="target/${{ matrix.target }}/release/bundle/dmg"
+          python3 scripts/notarize_macos_dmgs.py --directory "$folder" --report-dir "$RUNNER_TEMP/amberize-qa"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true || { echo "::error::Refusing to replace assets on a published release"; exit 1; }
+          for dmg in "$folder/"*.dmg; do
+            gh release upload "$GITHUB_REF_NAME" "$dmg" --clobber
+          done
+
       - name: Verify macOS signature and notarization
         if: runner.os == 'macOS'
         shell: bash
@@ -215,3 +235,69 @@ jobs:
           name: native-qa-${{ matrix.target }}
           path: ${{ runner.temp }}/amberize-qa/
           if-no-files-found: warn
+
+  repair-candidate-dmgs:
+    if: github.ref == 'refs/heads/codex/pre-release-qa-20260930' && contains(github.event.head_commit.message, '[qa-dmg-repair]')
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            file: Amberize_0.2.4-6_aarch64.dmg
+            sha256: 96ebb73255c7d8e1363385e5e0cb60e4e91a287c23fc9d3e33057c7873c35c2c
+          - target: x86_64-apple-darwin
+            file: Amberize_0.2.4-6_x64.dmg
+            sha256: 862b5f9522d4831125150011271b0285568daac5b26f5b9fe6c965bd618aa094
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      QA_TARGET: ${{ matrix.target }}
+      QA_FILE: ${{ matrix.file }}
+      QA_SHA256: ${{ matrix.sha256 }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify Apple authorization
+        run: python3 scripts/check_notarization_auth.py --report "$RUNNER_TEMP/amberize-dmg-evidence/${{ matrix.target }}/authentication.json"
+      - name: Download the exact existing draft DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder="$RUNNER_TEMP/amberize-dmg/${{ matrix.target }}"
+          mkdir -p "$folder"
+          gh release view v0.2.4-6 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-dmg-evidence/${{ matrix.target }}/candidate.json"
+          gh release download v0.2.4-6 --pattern "$QA_FILE" --dir "$folder"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          release = json.loads((root / 'amberize-dmg-evidence' / os.environ['QA_TARGET'] / 'candidate.json').read_text())
+          assert release['tagName'] == 'v0.2.4-6' and release['isDraft'] and release['isPrerelease']
+          assert release['targetCommitish'] == '676f4736adb877cd29cb413c40e3c2ff908c1523'
+          path = root / 'amberize-dmg' / os.environ['QA_TARGET'] / os.environ['QA_FILE']
+          assert hashlib.sha256(path.read_bytes()).hexdigest() == os.environ['QA_SHA256'], 'DMG differs from the tested candidate'
+          PY
+      - name: Notarize, staple, and assess the DMG container
+        run: python3 scripts/notarize_macos_dmgs.py --directory "$RUNNER_TEMP/amberize-dmg/${{ matrix.target }}" --report-dir "$RUNNER_TEMP/amberize-dmg-evidence/${{ matrix.target }}"
+      - name: Replace only the verified draft DMG
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh release view v0.2.4-6 --json isDraft --jq '.isDraft')" = true || { echo "::error::Refusing to modify a published release"; exit 1; }
+          path="$RUNNER_TEMP/amberize-dmg/${{ matrix.target }}/$QA_FILE"
+          gh release upload v0.2.4-6 "$path" --clobber
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          path = root / 'amberize-dmg' / os.environ['QA_TARGET'] / os.environ['QA_FILE']
+          report = {'file': path.name, 'before_sha256': os.environ['QA_SHA256'], 'after_sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'draft_only': True}
+          (root / 'amberize-dmg-evidence' / os.environ['QA_TARGET'] / 'final-hash.json').write_text(json.dumps(report, indent=2))
+          PY
+      - name: Upload DMG notarization evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dmg-notarization-${{ matrix.target }}
+          path: ${{ runner.temp }}/amberize-dmg-evidence/${{ matrix.target }}/
+          if-no-files-found: error
