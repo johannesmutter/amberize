@@ -73,7 +73,7 @@ def account_state(fixture):
         return connection.execute("SELECT id,secret_ref FROM accounts ORDER BY id").fetchall()
 
 
-def launch_agents(binary):
+def launch_agents(binary, require_background=False):
     directory = Path.home() / "Library/LaunchAgents"
     result = {}
     for path in directory.glob("*.plist"):
@@ -81,7 +81,9 @@ def launch_agents(binary):
         if str(binary).encode() not in raw:
             continue
         parsed = plistlib.loads(raw)
-        assert "--background" in parsed.get("ProgramArguments", [])
+        assert parsed.get("RunAtLoad") is True, "Login entry is not enabled"
+        if require_background:
+            assert parsed.get("ProgramArguments") == [str(binary), "--background"], "Updated login entry lacks the current executable and background flag"
         result[str(path)] = {"sha256": hashlib.sha256(raw).hexdigest(), "value": parsed}
     return result
 
@@ -226,7 +228,13 @@ def run(args):
                     if (process.poll() is not None and processes(binary)
                             and event_count(fixture, "app_started") > restart_baseline["app_started"]
                             and event_count(fixture, "integrity_check") > restart_baseline["integrity_check"]):
-                        assert launch_agents(binary) == old_agents, "Launch-at-login registration changed"
+                        new_agents = launch_agents(binary, require_background=True)
+                        assert set(new_agents) == set(old_agents), "Launch-at-login choice was lost"
+                        for name, agent in new_agents.items():
+                            assert agent["value"]["Label"] == old_agents[name]["value"]["Label"]
+                        report["old_launch_at_login"] = old_agents
+                        report["updated_launch_at_login"] = new_agents
+                        report["launch_at_login_refreshed_for_background"] = True
                         report["restarted_binary_sha256"] = sha256(binary)
                         report["new_process_restored_and_verified_archive"] = True
                         break
