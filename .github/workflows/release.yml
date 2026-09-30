@@ -85,6 +85,10 @@ jobs:
             done
           fi
 
+      - name: Validate Apple notarization credentials before building
+        if: runner.os == 'macOS'
+        run: python3 scripts/check_notarization_auth.py --report "$RUNNER_TEMP/amberize-qa/notarization-authentication.json"
+
       - name: Build Tauri app (macOS signed + notarized)
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_ID != '' && env.APPLE_PASSWORD != '' && env.APPLE_TEAM_ID != ''
         uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0

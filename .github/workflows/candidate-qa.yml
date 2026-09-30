@@ -32,42 +32,9 @@ jobs:
       APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Diagnose Apple authentication without rebuilding or submitting an app
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib, re, subprocess
-          names = ('APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID')
-          original = {name: os.environ.get(name, '') for name in names}
-          normalized = {name: value.strip() for name, value in original.items()}
-          report = {'operation': 'notarytool history authentication only',
-                    'secret_values_logged': False,
-                    'missing': [name for name in names if not normalized[name]],
-                    'surrounding_whitespace': {name: original[name] != normalized[name] for name in names},
-                    'app_specific_password_format': bool(re.fullmatch(r'[a-z]{4}(?:-[a-z]{4}){3}', normalized['APPLE_PASSWORD'])),
-                    'team_id_format': bool(re.fullmatch(r'[A-Z0-9]{10}', normalized['APPLE_TEAM_ID']))}
-          def probe(values):
-              try:
-                  result = subprocess.run(['xcrun', 'notarytool', 'history', '--apple-id', values['APPLE_ID'],
-                                           '--password', values['APPLE_PASSWORD'], '--team-id', values['APPLE_TEAM_ID'],
-                                           '--output-format', 'json', '--no-progress'],
-                                          capture_output=True, text=True, timeout=60)
-                  status = re.search(r'HTTP status code:\s*(\d{3})', result.stderr + result.stdout)
-                  return {'accepted': result.returncode == 0, 'exit_code': result.returncode,
-                          'http_status': int(status.group(1)) if status else None}
-              except subprocess.TimeoutExpired:
-                  return {'accepted': False, 'error': 'Apple authentication request timed out'}
-              except OSError:
-                  return {'accepted': False, 'error': 'Apple authentication tool could not run'}
-          if not report['missing']:
-              report['original'] = probe(original)
-              if any(report['surrounding_whitespace'].values()):
-                  report['normalized'] = probe(normalized)
-          directory = pathlib.Path(os.environ['RUNNER_TEMP']) / 'amberize-notarization-auth'
-          directory.mkdir()
-          (directory / 'authentication.json').write_text(json.dumps(report, indent=2))
-          print(json.dumps(report, indent=2))
-          assert report.get('normalized', report.get('original', {})).get('accepted'), 'Apple rejected the configured credentials; see the sanitized authentication report'
-          PY
+        run: python3 scripts/check_notarization_auth.py --report "$RUNNER_TEMP/amberize-notarization-auth/authentication.json"
       - name: Upload sanitized authentication evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
