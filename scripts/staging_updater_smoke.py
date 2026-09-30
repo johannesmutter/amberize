@@ -59,6 +59,9 @@ def prepare(source):
     config_path = source / "apps/desktop/src-tauri/tauri.conf.json"
     config = json.loads(config_path.read_text())
     assert config["version"] == "0.2.3" and config["identifier"] == "com.amberize.app"
+    # This temporary old app consumes signed updates; it is not an update
+    # payload and must not request the production private signing key.
+    config["bundle"]["createUpdaterArtifacts"] = False
     updater = config["plugins"]["updater"]
     updater["endpoints"] = [f"http://127.0.0.1:{PORT}/latest.json"]
     updater["dangerousInsecureTransportProtocol"] = True
@@ -177,6 +180,7 @@ def run(args):
               "differences": ["Older source rebuilt with a loopback-only HTTP staging endpoint",
                               "Old workspace lock entry corrected from 0.2.2 to 0.2.3; external dependency versions unchanged",
                               "Unsigned older test build; candidate payload is the exact signed draft",
+                              "Updater artifact generation disabled for the temporary older build",
                               "Old native setup gains a test-only observer that clicks unmodified UI buttons"],
               "limitations": ["Hosted macOS Apple Silicon only", "No actual OS reboot",
                               "Synthetic archive has no real provider credentials",
