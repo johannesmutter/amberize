@@ -252,6 +252,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 2px;
     border: 0;
     padding: 0;
