@@ -410,7 +410,14 @@ jobs:
           key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: rust-${{ runner.os }}-
       - name: Install disposable VM tooling
-        run: sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 cloud-image-utils ovmf
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y qemu-system-x86 cloud-image-utils ovmf acl
+          if [ -c /dev/kvm ]; then
+            sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          fi
       - name: Download verified draft package and Ubuntu guest image
         shell: bash
         run: |

@@ -101,6 +101,14 @@ PY
 '''
 
 
+def checkpoint_is_ready(observed, previous=None):
+    if previous is None:
+        return True
+    return (observed["boot_id"] != previous["boot_id"]
+            and observed["app_started"] > previous["app_started"]
+            and observed["integrity_checks"] > previous["integrity_checks"])
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for flag in ("root", "image", "package", "fixture-tool"):
@@ -159,13 +167,19 @@ def main():
             # kernel shuts down. Treat this as a transient unavailable guest.
             return subprocess.CompletedProcess(command, 255, "", "Guest SSH unavailable during boot or reboot")
 
-    def checkpoint():
+    def checkpoint(previous=None):
         deadline = time.monotonic() + 600
         while time.monotonic() < deadline:
             assert vm.poll() is None, "Disposable VM exited"
             attempt = ssh(GUEST_CHECKPOINT)
             if attempt.returncode == 0:
-                return json.loads(attempt.stdout)
+                observed = json.loads(attempt.stdout)
+                with (evidence / "checkpoint-observations.jsonl").open("a") as output:
+                    output.write(json.dumps(observed) + "\n")
+                # The process appears before asynchronous archive bootstrap
+                # finishes. Existing events must not satisfy the new login.
+                if checkpoint_is_ready(observed, previous):
+                    return observed
             time.sleep(5)
         raise RuntimeError("Guest desktop login did not start Amberize and verify its saved archive")
 
@@ -196,12 +210,14 @@ def main():
         while time.monotonic() < deadline:
             attempt = ssh("cat /proc/sys/kernel/random/boot_id")
             if attempt.returncode == 0 and attempt.stdout.strip() != before["boot_id"]:
+                report["actual_os_reboot"] = True
+                report["kernel_boot_id_after_reboot"] = attempt.stdout.strip()
                 break
             time.sleep(5)
         else:
             raise RuntimeError("Guest kernel boot identity did not change")
         print("Guest kernel boot identity changed after reboot", flush=True)
-        after = checkpoint()
+        after = checkpoint(previous=before)
         assert after["boot_id"] != before["boot_id"] and after["app_started"] > before["app_started"]
         assert after["integrity_checks"] > before["integrity_checks"]
         assert after["binary_sha256"] == before["binary_sha256"]
