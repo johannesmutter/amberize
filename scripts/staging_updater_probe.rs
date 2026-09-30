@@ -43,10 +43,13 @@ pub fn qa_updater_observation(app: AppHandle, stage: String) -> Result<(), Strin
         let value: serde_json::Value =
             serde_json::from_slice(&std::fs::read(config).map_err(|_| "Config unavailable")?)
                 .map_err(|_| "Invalid QA config")?;
-        let storage = email_archiver_storage::Storage::open_existing(
-            value["db_path"].as_str().ok_or("Saved archive missing")?,
-        )
-        .map_err(|_| "QA archive unavailable")?;
+        let path = value["db_path"].as_str().ok_or("Saved archive missing")?;
+        if !std::path::Path::new(path).is_file() {
+            return Err("Existing QA archive unavailable".into());
+        }
+        // v0.2.3 predates open_existing; require the fixture before using its old API.
+        let storage = email_archiver_storage::Storage::open_or_create(path)
+            .map_err(|_| "QA archive unavailable")?;
         let baseline = serde_json::json!({
             "app_started": storage.list_recent_events(Some("app_started"), 10000, 0)
                 .map_err(|_| "Startup events unavailable")?.len(),
