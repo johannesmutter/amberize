@@ -945,6 +945,7 @@
 
   <!-- Status Bar -->
   <StatusBar
+    outcome={sync_status.outcome}
     syncing={sync_status.syncing}
     syncing_account={sync_status.syncing_account}
     last_sync={sync_status.last_sync}

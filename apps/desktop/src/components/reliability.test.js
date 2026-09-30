@@ -127,6 +127,23 @@ describe('archive reliability', () => {
     const base=invoke.getMockImplementation();invoke.mockImplementation((cmd,args)=>cmd==='get_sync_status'?Promise.resolve({sync_in_progress:false,last_sync_status:'Error — today',last_sync_at:'2026-01-01',error:'Archive drive unavailable'}):base(cmd,args));
     const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});expect(await ui.findByText('Archive drive unavailable')).toBeInTheDocument();expect(ui.queryByText(/^Synced /)).not.toBeInTheDocument();
   });
+  test('dashboard restores the last successful sync instead of saying never synced', async () => {
+    const ui = render(MainDashboard, {db_path:'/tmp/archive.db'});
+    expect(await ui.findByText(/^Synced /)).toBeInTheDocument();
+    expect(ui.queryByText('Not synced yet')).not.toBeInTheDocument();
+  });
+  test('a background success updates the initial not-synced dashboard status', async () => {
+    const base = invoke.getMockImplementation();
+    let status = {sync_in_progress:false,last_sync_status:'not configured',last_sync_at:null};
+    invoke.mockImplementation((cmd,args) => cmd === 'get_sync_status' ? Promise.resolve(status) : base(cmd,args));
+    const ui = render(MainDashboard, {db_path:'/tmp/archive.db'});
+    expect(await ui.findByText('Not synced yet')).toBeInTheDocument();
+    await waitFor(() => expect(handlers.has('sync_status_updated')).toBe(true));
+    status = {sync_in_progress:false,last_sync_status:'OK — today',last_sync_at:'2026-01-01',last_success_at:'2026-01-01'};
+    handlers.get('sync_status_updated')({});
+    expect(await ui.findByText(/^Synced /)).toBeInTheDocument();
+    expect(ui.queryByText('Not synced yet')).not.toBeInTheDocument();
+  });
   test('query failures show a recovery error instead of a normal empty list',async()=>{
     const base=invoke.getMockImplementation();invoke.mockImplementation((cmd,args)=>cmd==='list_messages'?Promise.reject(new Error('Database locked')):base(cmd,args));const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});expect(await ui.findByRole('alert')).toHaveTextContent('Database locked');
   });
