@@ -1,5 +1,6 @@
 """Backend restart/recovery smoke test for an installed release in a fresh QA profile."""
 import argparse
+from contextlib import closing
 import hashlib
 import json
 import os
@@ -10,7 +11,7 @@ import time
 
 
 def fingerprint(path):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         rows = connection.execute("SELECT sha256,raw_mime FROM message_blobs ORDER BY sha256")
         hashes = []
         for expected, raw in rows:
@@ -23,7 +24,7 @@ def fingerprint(path):
 
 
 def event_count(path, kind):
-    with sqlite3.connect(path) as connection:
+    with closing(sqlite3.connect(path)) as connection:
         return connection.execute("SELECT COUNT(*) FROM events WHERE kind=?", (kind,)).fetchone()[0]
 
 
@@ -87,7 +88,7 @@ def main():
     try:
         boot("installed release restored and verified saved archive without a window")
         boot("process restart preserved archive path, interval, counts, and MIME hashes")
-        with sqlite3.connect(fixture) as connection:
+        with closing(sqlite3.connect(fixture)) as connection:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         unavailable = fixture.with_suffix(".disconnected")
         fixture.rename(unavailable)

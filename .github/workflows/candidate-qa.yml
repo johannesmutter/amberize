@@ -1,0 +1,75 @@
+name: Installed candidate QA
+
+on:
+  push:
+    branches: [codex/pre-release-qa-20260930]
+    paths:
+      - .github/workflows/candidate-qa.yml
+      - scripts/native_release_smoke.py
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Unpublished candidate tag
+        default: v0.2.4-6
+        required: true
+      commit:
+        description: Expected candidate commit
+        default: 676f4736adb877cd29cb413c40e3c2ff908c1523
+        required: true
+      msi_sha256:
+        description: Expected installer SHA-256 from the release build
+        default: 2b184676cef96bbed80e244c3acb77380d3c29501dec1c3dc746d4c8c2480c25
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      CANDIDATE_TAG: ${{ inputs.tag || 'v0.2.4-6' }}
+      CANDIDATE_COMMIT: ${{ inputs.commit || '676f4736adb877cd29cb413c40e3c2ff908c1523' }}
+      CANDIDATE_MSI_SHA256: ${{ inputs.msi_sha256 || '2b184676cef96bbed80e244c3acb77380d3c29501dec1c3dc746d4c8c2480c25' }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Download the exact unpublished installer
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          tag = os.environ['CANDIDATE_TAG']
+          assert re.fullmatch(r'v\d+\.\d+\.\d+-\d+', tag), 'A numeric prerelease tag is required'
+          assert subprocess.check_output(['git', 'rev-parse', tag], text=True).strip() == os.environ['CANDIDATE_COMMIT']
+          release = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'tagName,isDraft,isPrerelease,assets'], text=True))
+          assert release['tagName'] == tag and release['isDraft'] and release['isPrerelease']
+          qa = pathlib.Path(os.environ['RUNNER_TEMP']) / 'amberize-qa'
+          qa.mkdir()
+          (qa / 'candidate.json').write_text(json.dumps({'tag': tag, 'commit': os.environ['CANDIDATE_COMMIT'], 'test_runner_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(), 'release': release}, indent=2))
+          folder = pathlib.Path('target/x86_64-pc-windows-msvc/release/bundle/msi')
+          folder.mkdir(parents=True)
+          subprocess.run(['gh', 'release', 'download', tag, '--pattern', '*.msi', '--dir', str(folder)], check=True)
+          installers = list(folder.glob('*.msi'))
+          assert len(installers) == 1
+          assert hashlib.sha256(installers[0].read_bytes()).hexdigest() == os.environ['CANDIDATE_MSI_SHA256'].lower(), 'Installer differs from the approved release build'
+          PY
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+      - name: Create fixture, install MSI, and exercise recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run -p email_archiver_storage --release --example qa_fixture --locked -- create "$RUNNER_TEMP/amberize-qa/archive.sqlite3" 1024 > "$RUNNER_TEMP/amberize-qa/before.json"
+          powershell -NoProfile -File scripts/install_windows_qa.ps1
+          cargo run -p email_archiver_storage --release --example qa_fixture --locked -- verify "$RUNNER_TEMP/amberize-qa/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/after.json"
+          python -c 'import json,os,pathlib; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"amberize-qa"; a=json.loads((p/"before.json").read_text()); b=json.loads((p/"after.json").read_text()); assert a["mime_hashes"] == b["mime_hashes"]; assert b["integrity"]["ok"]; print("All synthetic MIME hashes preserved; full integrity passed")'
+      - name: Upload native candidate evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: installed-candidate-windows
+          path: ${{ runner.temp }}/amberize-qa/
+          if-no-files-found: error
