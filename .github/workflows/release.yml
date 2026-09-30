@@ -7,6 +7,8 @@ on:
     paths:
       - .github/workflows/release.yml
       - scripts/notarize_macos_dmgs.py
+      - scripts/staging_updater_smoke.py
+      - scripts/staging_updater_probe.rs
 
 # Needed so the workflow can create a draft GitHub Release
 # and upload assets via the `GITHUB_TOKEN`.
@@ -301,3 +303,85 @@ jobs:
           name: dmg-notarization-${{ matrix.target }}
           path: ${{ runner.temp }}/amberize-dmg-evidence/${{ matrix.target }}/
           if-no-files-found: error
+
+  staging-updater:
+    if: github.ref == 'refs/heads/codex/pre-release-qa-20260930' && contains(github.event.head_commit.message, '[qa-updater]')
+    runs-on: macos-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+      - name: Install Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+      - name: Download exact signed draft and verify staging inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/amberize-updater-inputs"
+          gh release view v0.2.4-6 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-updater-inputs/candidate.json"
+          gh release download v0.2.4-6 --pattern Amberize_aarch64.app.tar.gz --pattern latest.json --dir "$RUNNER_TEMP/amberize-updater-inputs"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'amberize-updater-inputs'
+          release = json.loads((root / 'candidate.json').read_text())
+          assert release['isDraft'] and release['isPrerelease'] and release['tagName'] == 'v0.2.4-6'
+          assert release['targetCommitish'] == '676f4736adb877cd29cb413c40e3c2ff908c1523'
+          assert subprocess.check_output(['git','rev-parse','v0.2.4-6'],text=True).strip() == release['targetCommitish']
+          assert subprocess.check_output(['git','rev-parse','v0.2.3'],text=True).strip() == '12df2be7fd5d16f03445ecdcf9d31a057f405e6b'
+          old = json.loads(subprocess.check_output(['git','show','v0.2.3:apps/desktop/src-tauri/tauri.conf.json']))
+          candidate = json.loads(subprocess.check_output(['git','show','v0.2.4-6:apps/desktop/src-tauri/tauri.conf.json']))
+          assert old['plugins']['updater']['pubkey'] == candidate['plugins']['updater']['pubkey']
+          assert hashlib.sha256((root / 'Amberize_aarch64.app.tar.gz').read_bytes()).hexdigest() == 'bf9e42df5f9354872f7d3f49a726066e33583c961bd058244a6a07bae5c85652'
+          PY
+      - name: Export and instrument the older source without changing its UI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/amberize-updater-old"
+          git archive v0.2.3 | tar -x -C "$RUNNER_TEMP/amberize-updater-old"
+          python3 scripts/staging_updater_smoke.py prepare "$RUNNER_TEMP/amberize-updater-old"
+      - name: Build isolated older app and synthetic archive helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build -p email_archiver_storage --release --example qa_fixture --locked
+          cd "$RUNNER_TEMP/amberize-updater-old/apps/desktop"
+          npm ci
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" npx tauri build --bundles app -- --locked
+      - name: Exercise rejected package, interrupted download, install, and restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/staging_updater_smoke.py run \
+            --root "$RUNNER_TEMP/amberize-updater-evidence" \
+            --old-app "$GITHUB_WORKSPACE/target/release/bundle/macos/Amberize.app" \
+            --candidate "$RUNNER_TEMP/amberize-updater-inputs/Amberize_aarch64.app.tar.gz" \
+            --manifest "$RUNNER_TEMP/amberize-updater-inputs/latest.json" \
+            --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
+            --candidate-sha256 bf9e42df5f9354872f7d3f49a726066e33583c961bd058244a6a07bae5c85652 \
+            --candidate-binary-sha256 7afeb24d9876a7661df6aaabe5e9f2dab4e30cf648c10d922f9b20fc514c5685
+      - name: Upload staging upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-updater-macos
+          path: |
+            ${{ runner.temp }}/amberize-updater-evidence/
+            ${{ runner.temp }}/amberize-updater-inputs/candidate.json
+          if-no-files-found: warn
