@@ -9,6 +9,8 @@ on:
       - scripts/notarize_macos_dmgs.py
       - scripts/staging_updater_smoke.py
       - scripts/staging_updater_probe.rs
+      - scripts/staging_updater_old_fixture.rs
+      - scripts/linux_reboot_qa.py
 
 # Needed so the workflow can create a draft GitHub Release
 # and upload assets via the `GITHUB_TOKEN`.
@@ -361,6 +363,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build -p email_archiver_storage --release --example qa_fixture --locked
+          cd "$RUNNER_TEMP/amberize-updater-old"
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo build -p email_archiver_storage --release --example qa_updater_old_fixture --locked
           cd "$RUNNER_TEMP/amberize-updater-old/apps/desktop"
           npm ci
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" npx tauri build --bundles app -- --locked
@@ -374,6 +378,7 @@ jobs:
             --candidate "$RUNNER_TEMP/amberize-updater-inputs/Amberize_aarch64.app.tar.gz" \
             --manifest "$RUNNER_TEMP/amberize-updater-inputs/latest.json" \
             --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
+            --old-fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_updater_old_fixture" \
             --candidate-sha256 bf9e42df5f9354872f7d3f49a726066e33583c961bd058244a6a07bae5c85652 \
             --candidate-binary-sha256 7afeb24d9876a7661df6aaabe5e9f2dab4e30cf648c10d922f9b20fc514c5685
       - name: Upload staging upgrade evidence
@@ -384,4 +389,70 @@ jobs:
           path: |
             ${{ runner.temp }}/amberize-updater-evidence/
             ${{ runner.temp }}/amberize-updater-inputs/candidate.json
+          if-no-files-found: warn
+
+  linux-reboot:
+    if: github.ref == 'refs/heads/codex/pre-release-qa-20260930' && contains(github.event.head_commit.message, '[qa-linux-reboot]')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
+      - name: Cache Cargo registry and fixture build
+        uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: rust-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: rust-${{ runner.os }}-
+      - name: Install disposable VM tooling
+        run: sudo apt-get update -qq && sudo apt-get install -y qemu-system-x86 cloud-image-utils ovmf
+      - name: Download verified draft package and Ubuntu guest image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/amberize-reboot-inputs"
+          gh release view v0.2.4-6 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-reboot-inputs/candidate.json"
+          gh release download v0.2.4-6 --pattern Amberize_0.2.4-6_amd64.deb --dir "$RUNNER_TEMP/amberize-reboot-inputs"
+          curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o "$RUNNER_TEMP/amberize-reboot-inputs/ubuntu.img"
+          curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/SHA256SUMS -o "$RUNNER_TEMP/amberize-reboot-inputs/SHA256SUMS"
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path(os.environ['RUNNER_TEMP'])/'amberize-reboot-inputs'
+          release=json.loads((root/'candidate.json').read_text())
+          assert release['isDraft'] and release['isPrerelease'] and release['tagName']=='v0.2.4-6'
+          assert release['targetCommitish']=='676f4736adb877cd29cb413c40e3c2ff908c1523'
+          assert hashlib.sha256((root/'Amberize_0.2.4-6_amd64.deb').read_bytes()).hexdigest()=='b7489b302de8ebf34fa1e7bb5a58f98833caae7c78f3af4af59dd954b3298092'
+          expected=[line.split()[0] for line in (root/'SHA256SUMS').read_text().splitlines() if line.split()[-1].lstrip('*')=='noble-server-cloudimg-amd64.img']
+          assert len(expected)==1
+          with (root/'ubuntu.img').open('rb') as image:
+           actual=hashlib.file_digest(image,'sha256').hexdigest()
+          assert actual==expected[0]
+          (root/'image-verification.json').write_text(json.dumps({'source':'https://cloud-images.ubuntu.com/noble/current/','sha256':actual,'matches_official_sha256':True}))
+          PY
+      - name: Build synthetic archive helper
+        run: cargo build -p email_archiver_storage --release --example qa_fixture --locked
+      - name: Boot guest desktop, reboot guest OS, and verify background restoration
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/linux_reboot_qa.py \
+            --root "$RUNNER_TEMP/amberize-reboot-vm" \
+            --image "$RUNNER_TEMP/amberize-reboot-inputs/ubuntu.img" \
+            --package "$RUNNER_TEMP/amberize-reboot-inputs/Amberize_0.2.4-6_amd64.deb" \
+            --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
+            --package-sha256 b7489b302de8ebf34fa1e7bb5a58f98833caae7c78f3af4af59dd954b3298092
+      - name: Upload reboot and desktop-login evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-reboot-login
+          path: |
+            ${{ runner.temp }}/amberize-reboot-vm/evidence/
+            ${{ runner.temp }}/amberize-reboot-inputs/candidate.json
+            ${{ runner.temp }}/amberize-reboot-inputs/image-verification.json
           if-no-files-found: warn

@@ -56,6 +56,9 @@ def prepare(source):
     original = original.replace("            app_commands::restart_app,", "            app_commands::restart_app,\n            qa_updater::qa_updater_observation,", 1)
     main.write_text(original)
     shutil.copyfile(Path(__file__).with_name("staging_updater_probe.rs"), main.with_name("qa_updater.rs"))
+    examples = source / "crates/storage/examples"
+    examples.mkdir(exist_ok=True)
+    shutil.copyfile(Path(__file__).with_name("staging_updater_old_fixture.rs"), examples / "qa_updater_old_fixture.rs")
     config_path = source / "apps/desktop/src-tauri/tauri.conf.json"
     config = json.loads(config_path.read_text())
     assert config["version"] == "0.2.3" and config["identifier"] == "com.amberize.app"
@@ -71,6 +74,11 @@ def prepare(source):
 def account_state(fixture):
     with closing(sqlite3.connect(f"file:{fixture}?mode=ro", uri=True)) as connection:
         return connection.execute("SELECT id,secret_ref FROM accounts ORDER BY id").fetchall()
+
+
+def schema_version(fixture):
+    with closing(sqlite3.connect(f"file:{fixture}?mode=ro", uri=True)) as connection:
+        return int(connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0])
 
 
 def launch_agents(binary, require_background=False):
@@ -159,12 +167,13 @@ def run(args):
     profile.mkdir(parents=True)
     config_path = profile / "config.json"
     fixture = root / "archive.sqlite3"
-    subprocess.run([str(args.fixture_tool), "create", str(fixture), "1024"], check=True,
+    subprocess.run([str(args.old_fixture_tool), "create", str(fixture), "1024"], check=True,
                    stdout=(root / "before.json").open("w"))
     config = {"db_path": str(fixture), "sync_interval_secs": 3600}
     config_path.write_text(json.dumps(config))
     baseline = fingerprint(fixture)
     baseline_accounts = account_state(fixture)
+    assert schema_version(fixture) == 2, "Fixture is not a genuine older-format archive"
     manifest = json.loads(args.manifest.read_text())
     assert manifest["version"] == VERSION
     entry = manifest["platforms"]["darwin-aarch64"]
@@ -178,6 +187,7 @@ def run(args):
     report = {"passed": False, "candidate_commit": CANDIDATE_COMMIT,
               "candidate_payload_sha256": sha256(candidate), "old_tag": "v0.2.3",
               "old_build_binary_sha256": sha256(args.old_app / "Contents/MacOS/Amberize"),
+              "old_archive_schema_version": 2,
               "test_endpoint": f"http://127.0.0.1:{PORT}/latest.json", "stages": [],
               "differences": ["Older source rebuilt with a loopback-only HTTP staging endpoint",
                               "Old workspace lock entry corrected from 0.2.2 to 0.2.3; external dependency versions unchanged",
@@ -196,6 +206,12 @@ def run(args):
             shutil.copytree(args.old_app, installed, symlinks=True)
             phase = root / mode
             phase.mkdir()
+            if mode == "success":
+                rollback = root / "rollback.sqlite3"
+                with closing(sqlite3.connect(f"file:{fixture}?mode=ro", uri=True)) as source:
+                    with closing(sqlite3.connect(rollback)) as destination:
+                        source.backup(destination)
+                assert fingerprint(rollback) == baseline and schema_version(rollback) == 2
             environment = dict(os.environ, AMBERIZE_UPDATER_QA_DIR=str(phase))
             with (phase / "app.log").open("wb") as output:
                 process = subprocess.Popen([str(binary)], env=environment, stdout=output, stderr=output)
@@ -255,6 +271,11 @@ def run(args):
                        stdout=(root / "after.json").open("w"))
         after = json.loads((root / "after.json").read_text())
         assert after["integrity"]["ok"]
+        report["updated_archive_schema_version"] = schema_version(fixture)
+        assert report["updated_archive_schema_version"] == 3
+        subprocess.run([str(args.old_fixture_tool), "verify", str(root / "rollback.sqlite3")], check=True,
+                       stdout=(root / "rollback-old-version-verification.json").open("w"))
+        report["older_archive_backup_verified_by_old_library"] = True
         report["mime_hashes_preserved"] = len(baseline["hashes"])
         report["account_credential_references_preserved"] = True
         report["launch_at_login_preserved"] = True
@@ -280,7 +301,7 @@ if __name__ == "__main__":
     preparation = sub.add_parser("prepare")
     preparation.add_argument("source", type=Path)
     test = sub.add_parser("run")
-    for flag in ("root", "old-app", "candidate", "manifest", "fixture-tool"):
+    for flag in ("root", "old-app", "candidate", "manifest", "fixture-tool", "old-fixture-tool"):
         test.add_argument("--" + flag, type=Path, required=True)
     test.add_argument("--candidate-sha256", required=True)
     test.add_argument("--candidate-binary-sha256", required=True)
