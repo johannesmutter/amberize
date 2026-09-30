@@ -19,7 +19,7 @@ fn report_directory() -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn qa_updater_observation(stage: String) -> Result<(), String> {
+pub fn qa_updater_observation(app: AppHandle, stage: String) -> Result<(), String> {
     if ![
         "ready",
         "update_available",
@@ -34,6 +34,31 @@ pub fn qa_updater_observation(stage: String) -> Result<(), String> {
         return Err("Unknown observation".into());
     }
     let _guard = REPORT_LOCK.lock().map_err(|_| "Report lock unavailable")?;
+    if stage == "restart_clicked" {
+        let config = app
+            .path()
+            .app_config_dir()
+            .map_err(|_| "Config directory unavailable")?
+            .join("config.json");
+        let value: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(config).map_err(|_| "Config unavailable")?)
+                .map_err(|_| "Invalid QA config")?;
+        let storage = email_archiver_storage::Storage::open_existing(
+            value["db_path"].as_str().ok_or("Saved archive missing")?,
+        )
+        .map_err(|_| "QA archive unavailable")?;
+        let baseline = serde_json::json!({
+            "app_started": storage.list_recent_events(Some("app_started"), 10000, 0)
+                .map_err(|_| "Startup events unavailable")?.len(),
+            "integrity_check": storage.list_recent_events(Some("integrity_check"), 10000, 0)
+                .map_err(|_| "Integrity events unavailable")?.len(),
+        });
+        std::fs::write(
+            report_directory()?.join("restart-baseline.json"),
+            serde_json::to_vec(&baseline).unwrap(),
+        )
+        .map_err(|_| "Cannot write restart baseline")?;
+    }
     let file = report_directory()?.join("observations.json");
     let mut stages: Vec<String> = if file.exists() {
         serde_json::from_slice(&std::fs::read(&file).map_err(|_| "Cannot read observations")?)

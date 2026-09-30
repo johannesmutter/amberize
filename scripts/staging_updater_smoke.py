@@ -198,7 +198,6 @@ def run(args):
             with (phase / "app.log").open("wb") as output:
                 process = subprocess.Popen([str(binary)], env=environment, stdout=output, stderr=output)
             old_hash = sha256(binary)
-            initial_integrity = event_count(fixture, "integrity_check")
             deadline = time.monotonic() + 180
             last_stages = []
             old_agents = None
@@ -220,13 +219,16 @@ def run(args):
                     assert plistlib.loads((installed / "Contents/Info.plist").read_bytes())["CFBundleShortVersionString"] == "0.2.3"
                     break
                 if mode == "success" and "restart_clicked" in last_stages:
+                    restart_baseline = json.loads((phase / "restart-baseline.json").read_text())
                     assert sha256(binary) == args.candidate_binary_sha256, "Installed app is not the exact draft binary"
                     version = plistlib.loads((installed / "Contents/Info.plist").read_bytes())["CFBundleShortVersionString"]
                     assert version == VERSION
                     if (process.poll() is not None and processes(binary)
-                            and event_count(fixture, "integrity_check") > initial_integrity):
+                            and event_count(fixture, "app_started") > restart_baseline["app_started"]
+                            and event_count(fixture, "integrity_check") > restart_baseline["integrity_check"]):
                         assert launch_agents(binary) == old_agents, "Launch-at-login registration changed"
                         report["restarted_binary_sha256"] = sha256(binary)
+                        report["new_process_restored_and_verified_archive"] = True
                         break
                 if mode == "success" and "install_error" in last_stages:
                     raise RuntimeError("Valid signed candidate installation failed")
