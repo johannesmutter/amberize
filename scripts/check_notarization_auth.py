@@ -1,6 +1,6 @@
 """Check existing Apple notarization credentials without submitting an application.
 
-Reports contain formatting flags and status codes only. Never print command
+Reports contain formatting flags, status codes, and fixed failure categories. Never print command
 arguments, credential values, submission history, or raw tool errors.
 """
 import argparse
@@ -23,9 +23,19 @@ def probe(credentials):
              "--output-format", "json", "--no-progress"],
             capture_output=True, text=True, timeout=60,
         )
-        status = re.search(r"HTTP status code:\s*(\d{3})", result.stderr + result.stdout)
-        return {"accepted": result.returncode == 0, "exit_code": result.returncode,
-                "http_status": int(status.group(1)) if status else None}
+        output = result.stderr + result.stdout
+        status = re.search(r"HTTP status code:\s*(\d{3})", output)
+        report = {"accepted": result.returncode == 0, "exit_code": result.returncode,
+                  "http_status": int(status.group(1)) if status else None}
+        if not report["accepted"] and report["http_status"] == 403:
+            # Return only fixed categories, never Apple's raw message or history.
+            if "a required agreement is missing or has expired" in output.lower():
+                report["reason"] = "agreement_required"
+            elif "invalid or inaccessible developer team id" in output.lower():
+                report["reason"] = "team_access_denied"
+            else:
+                report["reason"] = "authorization_denied"
+        return report
     except subprocess.TimeoutExpired:
         return {"accepted": False, "error": "Apple authentication request timed out"}
     except OSError:
@@ -65,6 +75,12 @@ def main():
         return 0
     if report.get("normalized", {}).get("accepted"):
         print("Remove surrounding whitespace from the Apple credential secrets before building.", file=sys.stderr)
+    elif report.get("original", {}).get("reason") == "agreement_required":
+        print("Apple requires a current developer agreement. Ask the Account Holder to check pending agreements and membership status in the Apple Developer account.", file=sys.stderr)
+    elif report.get("original", {}).get("reason") == "team_access_denied":
+        print("Apple denied access to the configured developer team. Verify APPLE_TEAM_ID and ensure the account in APPLE_ID belongs to that team.", file=sys.stderr)
+    elif report.get("original", {}).get("reason") == "authorization_denied":
+        print("Apple denied authorization (HTTP 403). Check developer team access and current agreements. Credential values and raw tool output remain private.", file=sys.stderr)
     else:
         print("Apple notarization authentication failed. Verify APPLE_ID and APPLE_TEAM_ID and replace APPLE_PASSWORD with a valid app-specific password. Enter secrets directly in GitHub, never in logs or chat.", file=sys.stderr)
     return 1

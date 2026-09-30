@@ -33,7 +33,7 @@ jobs:
       APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Diagnose Apple authentication without rebuilding or submitting an app
+      - name: Diagnose Apple authentication and team access without submitting an app
         run: python3 scripts/check_notarization_auth.py --report "$RUNNER_TEMP/amberize-notarization-auth/authentication.json"
       - name: Upload sanitized authentication evidence
         if: always()

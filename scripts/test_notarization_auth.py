@@ -39,6 +39,28 @@ class NotarizationAuthTests(unittest.TestCase):
         self.assertFalse(report["original"]["accepted"])
         self.assert_sanitized(report)
 
+    def test_403_agreement_error_is_classified_without_echoing_private_output(self):
+        error = "HTTP status code: 403. A required agreement is missing or has expired. " + " ".join(CREDENTIALS.values())
+        with patch.object(auth.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stdout="private-submission-history", stderr=error)):
+            report = auth.diagnose(CREDENTIALS)
+        self.assertEqual(report["original"]["reason"], "agreement_required")
+        self.assertNotIn("private-submission-history", json.dumps(report))
+        self.assert_sanitized(report)
+
+    def test_403_team_error_is_classified_without_echoing_private_output(self):
+        error = "HTTP status code: 403. Invalid or inaccessible developer team ID for the provided Apple ID. " + " ".join(CREDENTIALS.values())
+        with patch.object(auth.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stdout="", stderr=error)):
+            report = auth.diagnose(CREDENTIALS)
+        self.assertEqual(report["original"]["reason"], "team_access_denied")
+        self.assert_sanitized(report)
+
+    def test_403_unknown_error_does_not_invent_a_specific_cause(self):
+        error = "HTTP status code: 403. " + " ".join(CREDENTIALS.values())
+        with patch.object(auth.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stdout="", stderr=error)):
+            report = auth.diagnose(CREDENTIALS)
+        self.assertEqual(report["original"]["reason"], "authorization_denied")
+        self.assert_sanitized(report)
+
     def test_unexpected_exception_does_not_expose_its_text(self):
         with patch.object(auth.subprocess, "run", side_effect=ValueError(CREDENTIALS["APPLE_PASSWORD"])):
             report = auth.diagnose(CREDENTIALS)
