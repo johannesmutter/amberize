@@ -51,7 +51,9 @@ pub enum SyncError {
     )]
     MissingSecret { secret_ref: String },
 
-    #[error("secret store error: {0}")]
+    #[error(
+        "The saved mailbox password could not be read from secure storage. Unlock your system's credential store or allow Amberize access, then try Sync Now. Mailbox login was not attempted."
+    )]
     SecretStore(#[from] SecretStoreError),
 
     #[error("imap error: {0}")]
