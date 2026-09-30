@@ -42,6 +42,13 @@ def prepare(source):
     original = main.read_text()
     if "qa_updater" in original:
         raise RuntimeError("Older export is already instrumented")
+    lockfile = source / "Cargo.lock"
+    locked = lockfile.read_text()
+    stale_version = 'name = "amberize"\nversion = "0.2.2"'
+    assert locked.count(stale_version) == 1, "Unexpected old application lock entry"
+    # The v0.2.3 tag retained v0.2.2 here; change only the workspace package
+    # identity so --locked preserves every external dependency version.
+    lockfile.write_text(locked.replace(stale_version, 'name = "amberize"\nversion = "0.2.3"', 1))
     for anchor in ("mod app_commands;", "            Ok(())", "            app_commands::restart_app,"):
         assert original.count(anchor) == 1, "Older source does not match the expected tag"
     original = original.replace("mod app_commands;", "mod app_commands;\nmod qa_updater;", 1)
@@ -168,6 +175,7 @@ def run(args):
               "old_build_binary_sha256": sha256(args.old_app / "Contents/MacOS/Amberize"),
               "test_endpoint": f"http://127.0.0.1:{PORT}/latest.json", "stages": [],
               "differences": ["Older source rebuilt with a loopback-only HTTP staging endpoint",
+                              "Old workspace lock entry corrected from 0.2.2 to 0.2.3; external dependency versions unchanged",
                               "Unsigned older test build; candidate payload is the exact signed draft",
                               "Old native setup gains a test-only observer that clicks unmodified UI buttons"],
               "limitations": ["Hosted macOS Apple Silicon only", "No actual OS reboot",
