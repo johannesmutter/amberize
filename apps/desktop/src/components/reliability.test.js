@@ -6,6 +6,7 @@ import GeneralSettings from './GeneralSettings.svelte';
 import AddAccountForm from './AddAccountForm.svelte';
 import ConfirmDialog from './ConfirmDialog.svelte';
 import SettingsPage from './SettingsPage.svelte';
+import VirtualList from './VirtualList.svelte';
 const { invoke, save, handlers } = vi.hoisted(() => ({ invoke: vi.fn(), save: vi.fn(), handlers: new Map() }));
 vi.mock('../lib/tauri_bridge.js', () => ({
   tauri_invoke: invoke, tauri_save_dialog: save,
@@ -25,6 +26,18 @@ beforeEach(() => {
   });
 });
 describe('archive reliability', () => {
+  test('export checkboxes are separate from preview buttons and toggle independently', async () => {
+    const preview = vi.fn(), toggle = vi.fn();
+    const ui = render(VirtualList, {items: rows(1), bulk_mode: true, on_click: preview, on_toggle_selection: toggle});
+    const checkbox = ui.getByRole('checkbox', {name: 'Select Subject 1 for export'});
+    expect(checkbox.closest('button,[role="button"]')).toBeNull();
+    await fireEvent.click(ui.getByRole('button', {name: /Subject 1/}));
+    expect(preview).toHaveBeenCalledWith(expect.objectContaining({id: 1}));
+    expect(toggle).not.toHaveBeenCalled();
+    await fireEvent.click(checkbox);
+    expect(toggle).toHaveBeenCalledExactlyOnceWith(1);
+    expect(preview).toHaveBeenCalledTimes(1);
+  });
   test('browsing beyond 500 rows can return to the beginning and retains export selection', async () => {
     const all = rows(650);
     const base = invoke.getMockImplementation();

@@ -95,7 +95,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npx tauri
-          args: --locked --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
           tagName: ${{ github.ref_name }}
           releaseName: "Amberize ${{ github.ref_name }}"
           releaseBody: |
@@ -115,7 +115,7 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npx tauri
-          args: --locked --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
           tagName: ${{ github.ref_name }}
           releaseName: "Amberize ${{ github.ref_name }}"
           releaseBody: |

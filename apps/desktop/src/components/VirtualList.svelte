@@ -163,10 +163,6 @@
         class:selected={selected_item_id === item.id}
         class:checked={selected_ids.has(item.id)}
         style="top: {top}px;"
-        onclick={() => handle_row_click(item)}
-        role="button"
-        tabindex="0"
-        onkeydown={(e) => {if (e.target === e.currentTarget && (e.key === 'Enter' || e.key === ' ')) {e.preventDefault();handle_row_click(item);}}}
       >
         {#if bulk_mode}
           <div class="checkbox-col">
@@ -179,18 +175,23 @@
             />
           </div>
         {/if}
-        <div class="content">
-          <div class="row-1">
+        <button
+          type="button"
+          class="content"
+          onclick={() => handle_row_click(item)}
+          onkeydown={(e) => {if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();handle_row_click(item);}}}
+        >
+          <span class="row-1">
             <span class="participants">{format_participants(item)}</span>
             <span class="location">{format_location(item)}</span>
-          </div>
-          <div class="row-2">
+          </span>
+          <span class="row-2">
             <span class="subject">{item.subject || '(no subject)'}</span>
-          </div>
-          <div class="row-3">
+          </span>
+          <span class="row-3">
             <span class="snippet">{item.snippet || ''}</span>
-          </div>
-        </div>
+          </span>
+        </button>
       </div>
     {/each}
   </div>
@@ -252,6 +253,18 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .content:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .row-1 {

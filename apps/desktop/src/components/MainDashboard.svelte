@@ -836,7 +836,7 @@
                 {selected_for_export.size} selected
               </button>
             {:else}
-              <span class="bulk-mode-hint">Click messages to select</span>
+              <span class="bulk-mode-hint">Use checkboxes to select</span>
             {/if}
           </div>
           <div class="bulk-header-right">
