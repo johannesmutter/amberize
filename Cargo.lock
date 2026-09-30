@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "amberize"
-version = "0.2.4-6"
+version = "0.2.4-7"
 dependencies = [
  "base64 0.22.1",
  "email_archiver_adapters",
