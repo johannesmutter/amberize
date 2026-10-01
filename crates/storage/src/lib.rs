@@ -4955,6 +4955,49 @@ mod tests {
         assert!(Arc::ptr_eq(&storage.connection, &reopened.connection));
         drop(keep);
     }
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "invoked in a separate process by the archive lock regression"]
+    fn archive_exclusive_access_probe() {
+        let path = std::env::var_os("AMBERIZE_QA_LOCK_PROBE_PATH").unwrap();
+        let conn = Connection::open(PathBuf::from(path)).unwrap();
+        conn.busy_timeout(Duration::from_millis(100)).unwrap();
+        conn.execute_batch("PRAGMA locking_mode=EXCLUSIVE").unwrap();
+        let result = conn.query_row("SELECT COUNT(*) FROM schema_meta", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        assert!(
+            matches!(result, Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::DatabaseBusy),
+            "another process obtained exclusive access to an open archive: {result:?}"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn reopening_archive_preserves_sqlite_locks_against_other_processes() {
+        let storage = Storage::open_in_memory_for_tests().unwrap();
+        let probe = || {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "tests::archive_exclusive_access_probe",
+                ])
+                .env("AMBERIZE_QA_LOCK_PROBE_PATH", storage.db_path())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        probe();
+        let reopened = Storage::open_existing(storage.db_path()).unwrap();
+        assert!(Arc::ptr_eq(&storage.connection, &reopened.connection));
+        probe();
+    }
     #[test]
     fn unchanged_root_is_reused_but_local_and_external_blob_mutations_invalidate_it() {
         let (storage, account, mailbox) = setup_test_account_with_inbox();
