@@ -141,30 +141,7 @@ impl Storage {
         let storage = Self::connect(path, false, true)?;
         {
             let mut conn = storage.open_connection()?;
-            let version: Option<String> = conn
-                .query_row(
-                    "SELECT value FROM schema_meta WHERE key = 'schema_version'",
-                    [],
-                    |r| r.get(0),
-                )
-                .optional()
-                .map_err(|_| {
-                    StorageError::InvalidArchive("file is not an Amberize archive".into())
-                })?;
-            let version = version
-                .and_then(|v| v.parse::<i64>().ok())
-                .filter(|v| *v >= 1)
-                .ok_or_else(|| {
-                    StorageError::InvalidArchive(
-                        "archive schema version is missing or invalid".into(),
-                    )
-                })?;
-            if version > SCHEMA_VERSION {
-                return Err(StorageError::UnsupportedSchemaVersion {
-                    found: version,
-                    supported: SCHEMA_VERSION,
-                });
-            }
+            let version = existing_schema_version(&conn)?;
             // Do not recreate missing tables/guards in an existing current-version archive.
             if version < SCHEMA_VERSION {
                 migrate(&mut conn)?;
@@ -211,6 +188,11 @@ impl Storage {
                 };
             Connection::open_with_flags(path, flags)?
         };
+        // Reject foreign/empty databases before WAL or other write settings
+        // can change them. Validation uses SQLite itself, without raw handles.
+        if !create && cached {
+            existing_schema_version(&conn)?;
+        }
         apply_connection_pragmas(&conn, path.as_os_str() != ":memory:" && cached)?;
         conn.busy_timeout(DB_BUSY_TIMEOUT)?;
         conn.pragma_update(None, "cache_size", -4096)?;
@@ -2254,6 +2236,30 @@ fn test_db_path() -> PathBuf {
     std::env::temp_dir().join(format!(
         "email_archiver_test_{pid}_{nanos}_{counter}.sqlite3"
     ))
+}
+
+fn existing_schema_version(conn: &Connection) -> StorageResult<i64> {
+    let version: Option<String> = conn
+        .query_row(
+            "SELECT value FROM schema_meta WHERE key = 'schema_version'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|_| StorageError::InvalidArchive("file is not an Amberize archive".into()))?;
+    let version = version
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= 1)
+        .ok_or_else(|| {
+            StorageError::InvalidArchive("archive schema version is missing or invalid".into())
+        })?;
+    if version > SCHEMA_VERSION {
+        return Err(StorageError::UnsupportedSchemaVersion {
+            found: version,
+            supported: SCHEMA_VERSION,
+        });
+    }
+    Ok(version)
 }
 
 fn apply_connection_pragmas(conn: &Connection, enable_wal: bool) -> StorageResult<()> {
@@ -4783,6 +4789,27 @@ mod tests {
         assert!(Storage::open_existing(&path).is_err());
         assert!(Storage::create_new(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), b"not an archive");
+    }
+    #[test]
+    fn empty_and_foreign_databases_are_rejected_without_changes_or_sidecars() {
+        for empty in [true, false] {
+            let path = test_db_path();
+            if empty {
+                std::fs::write(&path, b"").unwrap();
+            } else {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE unrelated(value); INSERT INTO unrelated VALUES(42);",
+                )
+                .unwrap();
+            }
+            let before = std::fs::read(&path).unwrap();
+            assert!(Storage::open_existing(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+            for suffix in ["-wal", "-shm", "-journal"] {
+                assert!(!PathBuf::from(format!("{}{suffix}", path.display())).exists());
+            }
+        }
     }
     #[test]
     fn migration_backfills_existing_message_without_changing_mime_or_hash() {

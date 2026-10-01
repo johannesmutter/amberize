@@ -63,7 +63,9 @@ jobs:
 
       - name: Install cargo-audit
         if: matrix.coverage
-        run: cargo install cargo-audit --locked
+        uses: taiki-e/install-action@321fc0a24c15fdabb1b79b9ebd2a5963754771b2
+        with:
+          tool: cargo-audit
 
       - name: Dependency audit (cargo audit)
         if: matrix.coverage
