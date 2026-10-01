@@ -270,3 +270,7 @@ The signed Mac updater passed after three QA helpers' stale candidate-8 expectat
 ## Google import completion update
 
 At 15:09 CEST on October 1, the live QA app recorded a successful full Google account pass. A metadata-only snapshot showed 10,841 archived MIME blobs, all three selected Google folders error-free and advanced cursors. This closes initial multi-folder import completion; it does not establish a new controlled attachment delivery, settled background memory or a fresh content/root/event-chain audit. Earlier incomplete-import observations above remain historical.
+
+## Release 0.2.7 follow-up on October 2
+
+The published 0.2.4 AppImage had inaccessible launcher permissions. Separate-user testing then exposed intermittent startup failures, and a cross-process regression independently reproduced SQLite lock loss during raw archive file checks. The repairs and an additional rejected-file preservation check are included in 0.2.7. All nine release jobs, exact-package recovery/integrity checks, independent updater/Mac assessments, public downloads and website deployment passed. [The final release evidence](qa-release-0.2.7.md) records exact hashes, coverage limits and the external catalog retest awaiting authorization. Versions 0.2.5 and 0.2.6 remained unpublished.

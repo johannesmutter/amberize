@@ -1,0 +1,167 @@
+{
+  "version": "0.2.7",
+  "tag_commit": "9b101756fc2f57a0e44bf00865ba3f30bdb945a2",
+  "release_url": "https://github.com/johannesmutter/amberize/releases/tag/v0.2.7",
+  "published_at": "2026-10-01T23:29:31Z",
+  "release_run": "https://github.com/johannesmutter/amberize/actions/runs/36939821113",
+  "all_nine_release_jobs_passed": true,
+  "external_dependency_versions_and_checksums_unchanged": true,
+  "updater": {
+    "signatures_verified": 7,
+    "platform_entries_verified": 9,
+    "tampered_payload_rejected": true,
+    "all_17_public_assets_available": true,
+    "public_manifest_matches_verified_draft": true
+  },
+  "assets": {
+    "Amberize_0.2.7_aarch64.dmg": {
+      "size": 10183480,
+      "sha256": "9f77275285e55557a6a9a88703c127ce10bde5ed378dd93a36d4a951d2b2bbfb"
+    },
+    "Amberize_0.2.7_amd64.AppImage": {
+      "size": 90057208,
+      "sha256": "ef828d89235e6e3eb331b7b6a21114e501a4fac69085974d7a0bed280728c421"
+    },
+    "Amberize_0.2.7_amd64.AppImage.sig": {
+      "size": 420,
+      "sha256": "c22d75f68f7db51ceb6df2d534424ca32944c9cc06e07dea2e985cc758a649fa"
+    },
+    "Amberize_0.2.7_amd64.AppImage.tar.gz": {
+      "size": 89368898,
+      "sha256": "d0c5e56a4e75e974ddda3f3a8b7f07468b46646266a0c4b2dae108ff561ebd5a"
+    },
+    "Amberize_0.2.7_amd64.AppImage.tar.gz.sig": {
+      "size": 428,
+      "sha256": "e9ec751f15bf9e453362e6f2314042e05ef0583a9d39c09a977e955c8822e603"
+    },
+    "Amberize_0.2.7_amd64.deb": {
+      "size": 10492514,
+      "sha256": "25950c72523b50e35a1481911112a6bc2d788625a7bd950a87a3ef26c9cdf948"
+    },
+    "Amberize_0.2.7_amd64.deb.sig": {
+      "size": 412,
+      "sha256": "762e5dd577b1b127e136d1f91d21a880331dd648297b55db1c5e3abc0cd3171d"
+    },
+    "Amberize_0.2.7_x64.dmg": {
+      "size": 10823051,
+      "sha256": "ecb96a650eea9951716e1b4e09da89c3b2fbfabe3dbeea654d95793e7565b0f4"
+    },
+    "Amberize_0.2.7_x64_en-US.msi": {
+      "size": 7299072,
+      "sha256": "ccc5d924df673085cee57ef92c987a8d58876455f76f6557c1ecf03df270be64"
+    },
+    "Amberize_0.2.7_x64_en-US.msi.sig": {
+      "size": 420,
+      "sha256": "ec02db0448d93a60c0212fcb821f9e69d77e85f53d0df07348cf396c34a62d6c"
+    },
+    "Amberize_0.2.7_x64_en-US.msi.zip": {
+      "size": 7299226,
+      "sha256": "8972688df810f31437c6507c1773b76a3c1688122d350d1c215f6a634b4aad4e"
+    },
+    "Amberize_0.2.7_x64_en-US.msi.zip.sig": {
+      "size": 424,
+      "sha256": "f90ac01fa6dd2909d376b22aa24928085d1128fbcfe60b5e5ac23d6ed42931b7"
+    },
+    "Amberize_aarch64.app.tar.gz": {
+      "size": 9093032,
+      "sha256": "3e9c4e212bcc1a29f0d1797bb74398c8b583aefb95b98368365164e9e8dd45f8"
+    },
+    "Amberize_aarch64.app.tar.gz.sig": {
+      "size": 408,
+      "sha256": "58c7265a761ad7ba5129b20753c41bb1836b19f3ca77e57f41b103c116fee35d"
+    },
+    "Amberize_x64.app.tar.gz": {
+      "size": 9625316,
+      "sha256": "85903a57d63c4c0f198753d084248f419d2b220f02bc60956db86d82cfc2d3fa"
+    },
+    "Amberize_x64.app.tar.gz.sig": {
+      "size": 408,
+      "sha256": "58ea7168be0b053b6343e3f41cc9124aae2778cfd9534e6a94528e4b1c74c9cf"
+    },
+    "latest.json": {
+      "size": 5452,
+      "sha256": "79e2a5c57be430314918cfd4232254304697f3899505bb2785836c4ace274a4f"
+    }
+  },
+  "native_packages": {
+    "aarch64-apple-darwin": {
+      "passed": true,
+      "five_recovery_stages": true,
+      "all_1024_hashes_preserved": true,
+      "full_integrity_passed": true,
+      "binary_sha256": "cca67d7497353d6b0f183c7c5c36d8962047a14c9fa3c82b556585167285bfc6"
+    },
+    "x86_64-pc-windows-msvc": {
+      "passed": true,
+      "five_recovery_stages": true,
+      "all_1024_hashes_preserved": true,
+      "full_integrity_passed": true,
+      "binary_sha256": "e6b9e57ab0ab95de08b97c490cafe8da7e732f1fadc8399621a763f19d73fe84"
+    }
+  },
+  "linux": {
+    "passed": true,
+    "platform": "x86_64-unknown-linux-gnu",
+    "root_owned_launcher_uid": 0,
+    "execution_uid": 1002,
+    "five_cases_in_each_of_three_package_launch_modes": true,
+    "full_integrity_and_all_1024_hashes_preserved": true,
+    "stored_permissions_entries_checked": 368,
+    "max_glibc": "2.35"
+  },
+  "mac_assessments": {
+    "aarch64": {
+      "app_signature": true,
+      "app_staple": true,
+      "app_gatekeeper": true,
+      "dmg_signature": true,
+      "dmg_staple": true,
+      "dmg_gatekeeper": true
+    },
+    "x64": {
+      "app_signature": true,
+      "app_staple": true,
+      "app_gatekeeper": true,
+      "dmg_signature": true,
+      "dmg_staple": true,
+      "dmg_gatekeeper": true
+    }
+  },
+  "website": {
+    "passed": true,
+    "site": "https://amberize.fly.dev",
+    "release": "0.2.7",
+    "routes": {
+      "/": {
+        "status": 200,
+        "bytes": 21242,
+        "download_urls": [
+          "https://github.com/johannesmutter/amberize/releases/download/v0.2.7/Amberize_0.2.7_aarch64.dmg",
+          "https://github.com/johannesmutter/amberize/releases/download/v0.2.7/Amberize_0.2.7_amd64.AppImage",
+          "https://github.com/johannesmutter/amberize/releases/download/v0.2.7/Amberize_0.2.7_amd64.deb",
+          "https://github.com/johannesmutter/amberize/releases/download/v0.2.7/Amberize_0.2.7_x64.dmg",
+          "https://github.com/johannesmutter/amberize/releases/download/v0.2.7/Amberize_0.2.7_x64_en-US.msi"
+        ]
+      },
+      "/datenschutz": {
+        "status": 200,
+        "bytes": 17443
+      },
+      "/impressum": {
+        "status": 200,
+        "bytes": 10271
+      }
+    }
+  },
+  "website_image": "registry.fly.io/amberize:deployment-01M3WWY9QMGGFK2FXTVE74GSFK",
+  "website_source_commit": "266eef0ec3b6fe2729e2a9ae942cc2a295c30f40",
+  "catalog_retest": {
+    "status": "awaiting explicit approval to post /retest",
+    "pull_request": "https://github.com/AppImage/appimage.github.io/pull/8381"
+  },
+  "limits": [
+    "Intel Mac was cross-built; matching-hardware native execution not performed",
+    "Prior 0.2.4 manual platform/provider coverage limits remain applicable",
+    "Local production app and live accounts were not upgraded or modified"
+  ]
+}
