@@ -555,7 +555,7 @@ jobs:
             bundles: appimage
             payload: Amberize_0.2.4-9_amd64.AppImage.tar.gz
             payload_sha256: 6e7810be3fd62110751e5982c083ce836b7e450cdba41951d3db199d5a4eaec7
-            installed_sha256: eb0b254ac0dae6543e6dd7cd02e1baf40a060de95b927313122d6b46323c00aa
+            installed_sha256: e3c81848a63cdb3f3ba41de0043369865ea97aa508c402bf79471e7222f410d6
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     env:

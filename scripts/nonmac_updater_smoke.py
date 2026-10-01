@@ -132,7 +132,15 @@ def run(args):
                 if mode == "success":
                     assert "install_error" not in observations, "Valid signed updater installation failed"
                     baseline_path = phase / "restart-baseline.json"
-                    if baseline_path.exists() and binary.exists() and shared.sha256(binary) == args.candidate_binary_sha256:
+                    installed_hash = None
+                    if baseline_path.exists():
+                        try:
+                            installed_hash = shared.sha256(binary)
+                        except (FileNotFoundError, PermissionError):
+                            # MSI can temporarily lock/remove its executable during replacement.
+                            # Keep the exact-hash requirement and the existing bounded deadline.
+                            pass
+                    if installed_hash == args.candidate_binary_sha256:
                         before = json.loads(baseline_path.read_text())
                         if (process.poll() is not None and event_count(fixture, "app_started") > before["app_started"]
                                 and event_count(fixture, "integrity_check") > before["integrity_check"]):
@@ -143,7 +151,7 @@ def run(args):
                                     time.sleep(.2)
                                     continue
                                 report["credential_upgrade"] = credential
-                            report["restarted_binary_sha256"] = shared.sha256(binary)
+                            report["restarted_binary_sha256"] = installed_hash
                             report["new_process_restored_and_verified_archive"] = True
                             break
                 time.sleep(.2)
