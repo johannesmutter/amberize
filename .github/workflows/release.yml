@@ -338,20 +338,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/amberize-updater-inputs"
-          gh release view v0.2.4-9 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-updater-inputs/candidate.json"
-          gh release download v0.2.4-9 --pattern Amberize_aarch64.app.tar.gz --pattern latest.json --dir "$RUNNER_TEMP/amberize-updater-inputs"
+          gh release view v0.2.4 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-updater-inputs/candidate.json"
+          gh release download v0.2.4 --pattern Amberize_aarch64.app.tar.gz --pattern latest.json --dir "$RUNNER_TEMP/amberize-updater-inputs"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'amberize-updater-inputs'
           release = json.loads((root / 'candidate.json').read_text())
-          assert release['isDraft'] and release['isPrerelease'] and release['tagName'] == 'v0.2.4-9'
-          assert release['targetCommitish'] == '9efb01e4e804663b0d9f880fd0d558eed0a29ca1'
-          assert subprocess.check_output(['git','rev-parse','v0.2.4-9^{}'],text=True).strip() == release['targetCommitish']
+          assert release['isDraft'] and not release['isPrerelease'] and release['tagName'] == 'v0.2.4'
+          assert release['targetCommitish'] == '40fd6af103f15ef3621ef2af8f42c7edf32118df'
+          assert subprocess.check_output(['git','rev-parse','v0.2.4^{}'],text=True).strip() == release['targetCommitish']
           assert subprocess.check_output(['git','rev-parse','v0.2.3'],text=True).strip() == '12df2be7fd5d16f03445ecdcf9d31a057f405e6b'
           old = json.loads(subprocess.check_output(['git','show','v0.2.3:apps/desktop/src-tauri/tauri.conf.json']))
-          candidate = json.loads(subprocess.check_output(['git','show','v0.2.4-9:apps/desktop/src-tauri/tauri.conf.json']))
+          candidate = json.loads(subprocess.check_output(['git','show','v0.2.4:apps/desktop/src-tauri/tauri.conf.json']))
           assert old['plugins']['updater']['pubkey'] == candidate['plugins']['updater']['pubkey']
-          assert hashlib.sha256((root / 'Amberize_aarch64.app.tar.gz').read_bytes()).hexdigest() == '8e063dd2b51c8614d428e72f98c0844f85532a63a0cedba14202451d9fe08033'
+          assert hashlib.sha256((root / 'Amberize_aarch64.app.tar.gz').read_bytes()).hexdigest() == 'fe6478d0fb4a64af21809db3bf0e9a7fa1c200d58517a7063be734ec246cf41f'
           PY
       - name: Export and instrument the older source without changing its UI
         shell: bash
@@ -395,8 +395,8 @@ jobs:
             --manifest "$RUNNER_TEMP/amberize-updater-inputs/latest.json" \
             --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
             --old-fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_updater_old_fixture" \
-            --candidate-sha256 8e063dd2b51c8614d428e72f98c0844f85532a63a0cedba14202451d9fe08033 \
-            --candidate-binary-sha256 80f812c2e53a17d5a79c3931924b2ec77d2576b24ca527d1cc7b8664760416f2
+            --candidate-sha256 fe6478d0fb4a64af21809db3bf0e9a7fa1c200d58517a7063be734ec246cf41f \
+            --candidate-binary-sha256 7f6f9b0275558b2f0736f595cfd6d99d0c8886bec61b0548582a6bd87586ba4e
       - name: Upload staging upgrade evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -495,15 +495,15 @@ jobs:
           set -euo pipefail
           test "$(uname -m)" = x86_64
           mkdir "$RUNNER_TEMP/amberize-intel-inputs" "$RUNNER_TEMP/amberize-intel-evidence"
-          gh release view v0.2.4-9 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-intel-inputs/candidate.json"
-          gh release download v0.2.4-9 --pattern Amberize_x64.app.tar.gz --dir "$RUNNER_TEMP/amberize-intel-inputs"
+          gh release view v0.2.4 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-intel-inputs/candidate.json"
+          gh release download v0.2.4 --pattern Amberize_x64.app.tar.gz --dir "$RUNNER_TEMP/amberize-intel-inputs"
           python3 - <<'PY'
           import hashlib,json,os,pathlib
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'amberize-intel-inputs'
           r=json.loads((root/'candidate.json').read_text())
-          assert r['tagName']=='v0.2.4-9' and r['isDraft'] and r['isPrerelease']
-          assert r['targetCommitish']=='9efb01e4e804663b0d9f880fd0d558eed0a29ca1'
-          assert hashlib.sha256((root/'Amberize_x64.app.tar.gz').read_bytes()).hexdigest()=='285802d9e1a33bfe5beb7e01e513ddead95c42d6df7b7e74f6e13831c7350b2a'
+          assert r['tagName']=='v0.2.4' and r['isDraft'] and not r['isPrerelease']
+          assert r['targetCommitish']=='40fd6af103f15ef3621ef2af8f42c7edf32118df'
+          assert hashlib.sha256((root/'Amberize_x64.app.tar.gz').read_bytes()).hexdigest()=='8708af02f251f0b3b0b345ff6cfc02f02122bc27b6cf1b112ba30f1b4b2c9451'
           PY
           tar -xzf "$RUNNER_TEMP/amberize-intel-inputs/Amberize_x64.app.tar.gz" -C "$RUNNER_TEMP/amberize-intel-inputs"
           app="$RUNNER_TEMP/amberize-intel-inputs/Amberize.app"
@@ -524,7 +524,7 @@ jobs:
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'amberize-intel-evidence'
           a=json.loads((root/'before.json').read_text());b=json.loads((root/'after.json').read_text());n=json.loads((root/'native.json').read_text())
           assert platform.machine()=='x86_64' and n['passed'] and len(n['stages'])==5
-          assert n['binary_sha256']=='9b069f6cf837c0e45429a98997fca477f3f838680d41a7933424e17985d983be'
+          assert n['binary_sha256']=='a4ea8ee032928a2ff5fb71ea04775af1b90d56861b304af1978a243185433700'
           assert a['mime_hashes']==b['mime_hashes'] and b['integrity']['ok']
           (root/'hardware.json').write_text(json.dumps({'machine':platform.machine(),'os':platform.platform(),'exact_candidate_binary':True,'full_integrity_passed':True,'all_1024_hashes_preserved':True}))
           PY
@@ -532,7 +532,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: candidate9-intel-native
+          name: stable-intel-native
           path: |
             ${{ runner.temp }}/amberize-intel-evidence/
             ${{ runner.temp }}/amberize-intel-inputs/candidate.json
@@ -547,15 +547,15 @@ jobs:
           - runner: windows-latest
             target: x86_64-pc-windows-msvc
             bundles: msi
-            payload: Amberize_0.2.4-9_x64_en-US.msi.zip
-            payload_sha256: 39e46ebf7e73f611d8669dad8f29ab9c647cc27e1cb1da1eb4c3fc80d8f9a047
-            installed_sha256: a0c07b161d81d7993bc3783015d2b6aed2950cd1d520a17f92c33e8c07ead927
+            payload: Amberize_0.2.4_x64_en-US.msi.zip
+            payload_sha256: b678a0d0ba1d71d2d0e7390ca168017af564c5f324655936e5df17267ecbcb2c
+            installed_sha256: f5d4be6635a2b435793d1c6a225a67d334a78ab52a436e0e8a523fbfd4c3f9bd
           - runner: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             bundles: appimage
-            payload: Amberize_0.2.4-9_amd64.AppImage.tar.gz
-            payload_sha256: 6e7810be3fd62110751e5982c083ce836b7e450cdba41951d3db199d5a4eaec7
-            installed_sha256: e3c81848a63cdb3f3ba41de0043369865ea97aa508c402bf79471e7222f410d6
+            payload: Amberize_0.2.4_amd64.AppImage.tar.gz
+            payload_sha256: bc2d1d2537f4c9620ccd0dfcd1f83f2b94cce900f2e18cb927b3efbb5e0fe583
+            installed_sha256: a5719bbc29a89477efd59ec5f07148e3e1444965d8e227f0c1ac4ac4d308b1da
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
     env:
@@ -589,15 +589,15 @@ jobs:
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/amberize-nonmac-inputs" "$RUNNER_TEMP/amberize-nonmac-old"
-          gh release view v0.2.4-9 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-nonmac-inputs/candidate.json"
-          gh release download v0.2.4-9 --pattern "$QA_PAYLOAD" --pattern latest.json --dir "$RUNNER_TEMP/amberize-nonmac-inputs"
+          gh release view v0.2.4 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-nonmac-inputs/candidate.json"
+          gh release download v0.2.4 --pattern "$QA_PAYLOAD" --pattern latest.json --dir "$RUNNER_TEMP/amberize-nonmac-inputs"
           python - <<'PY'
           import hashlib,json,os,pathlib,subprocess
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'amberize-nonmac-inputs'
           r=json.loads((root/'candidate.json').read_text())
-          assert r['isDraft'] and r['isPrerelease'] and r['tagName']=='v0.2.4-9'
-          assert r['targetCommitish']=='9efb01e4e804663b0d9f880fd0d558eed0a29ca1'
-          assert subprocess.check_output(['git','rev-parse','v0.2.4-9^{}'],text=True).strip()==r['targetCommitish']
+          assert r['isDraft'] and not r['isPrerelease'] and r['tagName']=='v0.2.4'
+          assert r['targetCommitish']=='40fd6af103f15ef3621ef2af8f42c7edf32118df'
+          assert subprocess.check_output(['git','rev-parse','v0.2.4^{}'],text=True).strip()==r['targetCommitish']
           assert hashlib.sha256((root/os.environ['QA_PAYLOAD']).read_bytes()).hexdigest()==os.environ['QA_PAYLOAD_SHA256']
           PY
           python - <<'PYCODE'
@@ -651,7 +651,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: candidate9-updater-${{ matrix.target }}
+          name: stable-updater-${{ matrix.target }}
           path: |
             ${{ runner.temp }}/amberize-nonmac-evidence/
             ${{ runner.temp }}/amberize-nonmac-inputs/candidate.json

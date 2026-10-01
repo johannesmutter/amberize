@@ -100,7 +100,7 @@ pub fn start(app: AppHandle) {
             const button = [...document.querySelectorAll('.update-banner button')]
               .find(button => button.textContent.trim() === 'Install & Restart');
             if (!button || button.disabled) return;
-            if (!document.querySelector('.update-banner')?.textContent.includes('v0.2.4-9'))
+            if (!document.querySelector('.update-banner')?.textContent.includes('v0.2.4'))
               throw new Error('Unexpected candidate version');
             await invoke('autostart_set_enabled', {enabled:true});
             if (!await invoke('autostart_is_enabled')) throw new Error('Autostart unavailable');
