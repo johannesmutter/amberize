@@ -229,7 +229,15 @@ jobs:
         run: |
           set -euo pipefail
           qa_root=$(mktemp -d /tmp/amberize-appimage-user-XXXXXX)
-          trap 'sudo rm -rf "$qa_root"' EXIT
+          preserve_and_clean() {
+            for suffix in json log; do
+              if [ -f "$qa_root/home/unrelated-user.$suffix" ]; then
+                cp "$qa_root/home/unrelated-user.$suffix" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.$suffix"
+              fi
+            done
+            sudo rm -rf "$qa_root"
+          }
+          trap preserve_and_clean EXIT
           chmod 755 "$qa_root"
           cp -a "$RUNNER_TEMP/amberize-appimage/squashfs-root" "$qa_root/app"
           sudo chown -hR root:root "$qa_root/app"
