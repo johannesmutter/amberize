@@ -6,7 +6,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let reference = args
         .get(2)
         .ok_or("Usage: qa_keychain write|read|delete qa/UNIQUE-ID")?;
-    if !reference.starts_with("qa/") || reference.len() < 12 {
+    if !(reference.starts_with("qa/") || reference.starts_with("qa-old-fixture/"))
+        || reference.len() < 12
+    {
         return Err("Only unique synthetic QA references are accepted".into());
     }
     let store = KeychainSecretStore::new();

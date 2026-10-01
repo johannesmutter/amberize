@@ -16,9 +16,9 @@ import time
 
 from native_release_smoke import fingerprint, event_count
 
-VERSION = "0.2.4-7"
+VERSION = "0.2.4-8"
 PORT = 18743
-CANDIDATE_COMMIT = "bcdb730817eae47a9d6b615a9182c1dbdcb900f7"
+CANDIDATE_COMMIT = "b455497f7a2ffed210008a5dd6375b7cf67cedc4"
 
 
 def sha256(path):
@@ -26,13 +26,14 @@ def sha256(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
-def require_ci():
-    if os.environ.get("GITHUB_ACTIONS") != "true" or os.sys.platform != "darwin":
-        raise RuntimeError("This test requires a fresh hosted macOS CI profile")
+def require_ci(platform="darwin"):
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.sys.platform != platform:
+        raise RuntimeError("This test requires a fresh hosted CI profile on the expected platform")
 
 
-def prepare(source):
-    require_ci()
+def prepare(source, *, platform="darwin", probe_name="staging_updater_probe.rs"):
+    require_ci(platform)
+    assert probe_name in ("staging_updater_probe.rs", "nonmac_updater_probe.rs")
     # The checkout must be an untouched export of the old tag, not the active project.
     if not source.is_relative_to(Path(os.environ["RUNNER_TEMP"]).resolve()):
         raise RuntimeError("Older export must stay inside RUNNER_TEMP")
@@ -55,7 +56,7 @@ def prepare(source):
     original = original.replace("            Ok(())", "            qa_updater::start(app.handle().clone());\n            Ok(())", 1)
     original = original.replace("            app_commands::restart_app,", "            app_commands::restart_app,\n            qa_updater::qa_updater_observation,", 1)
     main.write_text(original)
-    shutil.copyfile(Path(__file__).with_name("staging_updater_probe.rs"), main.with_name("qa_updater.rs"))
+    shutil.copyfile(Path(__file__).with_name(probe_name), main.with_name("qa_updater.rs"))
     examples = source / "crates/storage/examples"
     examples.mkdir(exist_ok=True)
     shutil.copyfile(Path(__file__).with_name("staging_updater_old_fixture.rs"), examples / "qa_updater_old_fixture.rs")
@@ -108,7 +109,7 @@ def new_process_keychain_observation(fixture, baseline_event_id):
         error = json.loads(detail).get("error")
         if error is None:
             continue
-        if error.startswith("qa@example.invalid: imap error:") and "connection refused" in error.lower():
+        if error.startswith("qa@example.invalid: imap error:") and any(phrase in error.lower() for phrase in ("connection refused", "actively refused")):
             return {"new_process_keychain_read_passed": True, "provider_connection_attempted": True,
                     "provider_login_attempted": False, "event_id": event_id,
                     "credential_value_recorded": False}

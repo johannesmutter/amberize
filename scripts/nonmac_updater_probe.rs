@@ -1,52 +1,8 @@
 //! Injected only into an isolated v0.2.3 test build; never part of a distributable.
-use email_archiver_adapters::{KeychainSecretStore, SecretStore};
 use std::{path::PathBuf, sync::Mutex, time::Duration};
 use tauri::{AppHandle, Manager};
 
 static REPORT_LOCK: Mutex<()> = Mutex::new(());
-
-fn write_synthetic_keychain(app: &AppHandle) -> Result<(), String> {
-    let config = app
-        .path()
-        .app_config_dir()
-        .map_err(|_| "Config directory unavailable")?
-        .join("config.json");
-    let value: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(config).map_err(|_| "Config unavailable")?)
-            .map_err(|_| "Invalid QA config")?;
-    let path = std::path::Path::new(value["db_path"].as_str().ok_or("Saved archive missing")?);
-    let runner = PathBuf::from(std::env::var_os("RUNNER_TEMP").ok_or("RUNNER_TEMP missing")?);
-    if !path.starts_with(&runner) || !path.is_file() {
-        return Err("Refusing non-fixture archive".into());
-    }
-    let storage = email_archiver_storage::Storage::open_or_create(path)
-        .map_err(|_| "QA archive unavailable")?;
-    let accounts = storage
-        .list_accounts()
-        .map_err(|_| "QA account unavailable")?;
-    if accounts.len() != 1
-        || !accounts[0].secret_ref.starts_with("qa-old-fixture/")
-        || accounts[0].imap_host != "127.0.0.1"
-        || accounts[0].imap_port != 9
-    {
-        return Err("Refusing non-synthetic credential".into());
-    }
-    let store = KeychainSecretStore::new();
-    let synthetic = format!(
-        "updater-fixture-{}-{:?}",
-        std::process::id(),
-        std::time::SystemTime::now()
-    );
-    store
-        .set_secret(&accounts[0].secret_ref, &synthetic)
-        .map_err(|_| "Synthetic Keychain write failed")?;
-    std::fs::write(
-        report_directory()?.join("keychain-written.json"),
-        br#"{"synthetic_credential_written_by_old_app":true,"credential_value_recorded":false}"#,
-    )
-    .map_err(|_| "Cannot record Keychain write")?;
-    Ok(())
-}
 
 fn report_directory() -> Result<PathBuf, String> {
     if std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true") {
@@ -78,10 +34,7 @@ pub fn qa_updater_observation(app: AppHandle, stage: String) -> Result<(), Strin
         return Err("Unknown observation".into());
     }
     let _guard = REPORT_LOCK.lock().map_err(|_| "Report lock unavailable")?;
-    if stage == "ready" {
-        write_synthetic_keychain(&app)?;
-    }
-    if stage == "restart_clicked" {
+    if stage == "restart_clicked" || stage == "install_clicked" {
         let config = app
             .path()
             .app_config_dir()

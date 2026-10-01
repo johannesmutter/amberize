@@ -38,6 +38,14 @@ class StagingUpdaterTests(unittest.TestCase):
             self.assertEqual(result["event_id"], 4)
             self.assertFalse(result["provider_login_attempted"])
 
+    def test_windows_connection_refusal_also_proves_persisted_credential_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = self.keychain_fixture(directory, [
+                (1, "app_started", "{}"),
+                (2, "ui_sync_finished", json.dumps({"error": "qa@example.invalid: imap error: No connection could be made because the target machine actively refused it. (os error 10061)"})),
+            ])
+            self.assertTrue(staging.new_process_keychain_observation(path, 0)["new_process_keychain_read_passed"])
+
     def test_keychain_proof_rejects_missing_or_denied_credentials(self):
         for error in ["qa@example.invalid: The saved password is unavailable.",
                       "qa@example.invalid: The saved mailbox password could not be read from secure storage."]:
