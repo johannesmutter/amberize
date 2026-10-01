@@ -6,7 +6,6 @@ publish = false
 license = "MIT"
 
 [dependencies]
-keyring = { version = "3", features = ["apple-native"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
@@ -14,7 +13,7 @@ tokio = { version = "1", features = ["net", "rt", "macros", "time", "io-util"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 async-imap = "0.11"
 async-native-tls = "0.5"
-futures-util = "0.3"
+futures-util = {version="0.3",features=["io"]}
 mail-parser = "0.11"
 hashify = "=0.2.6"
 sha2 = "0.10"
@@ -26,3 +25,17 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 
 email_archiver_storage = { path = "../storage" }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
+[target.'cfg(not(any(target_os = "macos", windows, target_os = "linux")))'.dependencies]
+keyring = { version = "3" }
+
+[dev-dependencies]
+tokio = {version="1",features=["test-util"]}

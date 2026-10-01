@@ -1,6 +1,6 @@
 <script>
   import { untrack } from 'svelte';
-  import { tauri_invoke, tauri_listen, tauri_save_dialog } from '../lib/tauri_bridge.js';
+  import { tauri_invoke, listen_scoped, tauri_save_dialog } from '../lib/tauri_bridge.js';
   import VirtualList from './VirtualList.svelte';
   import MessagePreview from './MessagePreview.svelte';
   import StatusBar from './StatusBar.svelte';
@@ -42,6 +42,21 @@
   /** @type {any | null} */
   let selected_message = $state(null);
   let message_loading = $state(false);
+  let preview_generation = 0;
+  let window_visible = $state(true);
+  let load_error = $state('');
+  let window_origin = $state(0);
+  let previous_available = $state(false);
+  let selected_rows = $state(new Map());
+  let export_operation_id = $state('');
+  let export_choosing = $state(false);
+  let export_cancel_requested = $state(false);
+  let export_message = $state('');
+  let disposed = false;
+  $effect(() => () => {
+    disposed = true;
+    if (export_operation_id) void tauri_invoke('cancel_auditor_export', {operationId:export_operation_id}).catch(() => {});
+  });
 
   // Message list paging (inbox view)
   let message_list_offset = $state(0);
@@ -90,17 +105,19 @@
   let hidden_state_needs_reload = $state(false);
 
   function clear_preview_state() {
+    preview_generation++;
     selected_message_id = null;
     selected_message = null;
     message_loading = false;
   }
 
   function clear_hidden_window_state() {
+    window_visible = false; sync_progress = null;
     clear_preview_state();
 
     // Reset list-heavy state so hidden-to-tray mode does not retain large arrays.
     messages = [];
-    selected_for_export = new Set();
+    selected_for_export = new Set(); selected_rows = new Map();
     viewing_selection = false;
     bulk_mode = false;
     message_list_offset = 0;
@@ -136,70 +153,23 @@
     tauri_invoke('set_export_eml_menu_enabled', { enabled: has_selection }).catch(() => {});
   });
 
-  // Listen to Tauri events
-  $effect(() => {
-    let unlisten_sync_status = null;
-    let unlisten_export_eml = null;
-    let unlisten_sync_progress = null;
-    let unlisten_main_window_hidden = null;
-
-    void (async () => {
-      try {
-        unlisten_sync_status = await tauri_listen('sync_status_updated', () => {
-          void load_sync_status();
-          void load_messages(true);
-          void load_archive_stats();
-          // Clear progress when sync finishes.
-          sync_progress = null;
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-      try {
-        unlisten_export_eml = await tauri_listen('menu_export_eml', () => {
-          void export_single();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-      try {
-        unlisten_sync_progress = await tauri_listen('sync_progress', (event) => {
-          sync_progress = event.payload;
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-      try {
-        unlisten_main_window_hidden = await tauri_listen('main_window_hidden', () => {
-          clear_hidden_window_state();
-        });
-      } catch {
-        // ignore when not running inside Tauri
-      }
-    })();
-
-    return () => {
-      unlisten_sync_status?.();
-      unlisten_export_eml?.();
-      unlisten_sync_progress?.();
-      unlisten_main_window_hidden?.();
-    };
-  });
-
-  // Reload once when returning from a close-to-tray hide.
-  $effect(() => {
-    const on_visibility_change = () => {
-      if (document.hidden) return;
-      if (!hidden_state_needs_reload) return;
-      hidden_state_needs_reload = false;
-      void load_messages(true);
-    };
-
-    document.addEventListener('visibilitychange', on_visibility_change);
-    return () => {
-      document.removeEventListener('visibilitychange', on_visibility_change);
-    };
-  });
+  // Native visibility is authoritative; document.hidden varies across webviews.
+  $effect(() => listen_scoped({
+    sync_status_updated: () => { if (!window_visible) {hidden_state_needs_reload = true; return;} void refresh_after_sync(); },
+    menu_export_eml: () => {if (window_visible) void export_single();},
+    sync_progress: event => {if (window_visible) sync_progress = event.payload;},
+    main_window_hidden: () => clear_hidden_window_state(),
+    main_window_shown: () => {
+      window_visible = true;
+      if (hidden_state_needs_reload) {hidden_state_needs_reload = false; void load_accounts(); void load_sync_status(); void load_archive_stats(); void load_messages(true);}
+    },
+  }));
+  async function refresh_after_sync() {
+    const was_syncing = sync_status.syncing;
+    await load_sync_status();
+    if (!window_visible) return;
+    if (!sync_status.syncing) { sync_progress = null; if (was_syncing) { void load_messages(true, false, true); void load_archive_stats(); } }
+  }
 
   // Reload messages when filters change.
   // IMPORTANT: load_messages reads internal loading state ($state) which must NOT
@@ -244,28 +214,28 @@
   });
 
   async function load_accounts() {
-    if (!db_path?.trim()) return;
+    if (!window_visible || !db_path?.trim()) return;
     try {
       const all_accounts = await tauri_invoke('list_accounts', { dbPath: db_path });
-      accounts = all_accounts.filter(a => !a.disabled);
-    } catch {
-      // ignore
-    }
+      if (window_visible) accounts = all_accounts;
+    } catch (err) { load_error = String(err); }
   }
 
   async function load_archive_stats() {
-    if (!db_path?.trim()) return;
+    if (!window_visible || !db_path?.trim()) return;
     try {
       const account_id = filter_account ? Number(filter_account) : null;
       const stats = await tauri_invoke('get_archive_stats', {
         dbPath: db_path,
         accountId: (account_id && !isNaN(account_id)) ? account_id : null,
       });
+      if (!window_visible) return;
       if (stats && typeof stats === 'object') {
         archive_total_messages = stats.account_messages ?? stats.total_messages ?? 0;
         archive_db_size_bytes = stats.db_size_bytes ?? 0;
       }
       const date_range = await tauri_invoke('get_archive_date_range', { dbPath: db_path });
+      if (!window_visible) return;
       archive_oldest_date = date_range?.oldest_date ?? null;
       archive_newest_date = date_range?.newest_date ?? null;
     } catch {
@@ -289,16 +259,19 @@
   });
 
   async function load_sync_status() {
-    if (!db_path?.trim()) return;
+    if (!window_visible || !db_path?.trim()) return;
     try {
       const status = await tauri_invoke('get_sync_status');
       if (status && typeof status === 'object') {
-        const prev_error = sync_status.error;
+        if (!window_visible) return;
+        const outcome = status.last_sync_status?.split(' — ')[0]?.toLowerCase() ?? 'never';
+        const prev_error = outcome === 'error' || outcome === 'partial' ? (status.error || status.last_sync_status) : null;
         const prev_error_account_id = sync_status.error_account_id;
         sync_status = {
           syncing: status.sync_in_progress || false,
           syncing_account: null,
-          last_sync: status.last_sync_at || null,
+          last_sync: outcome === 'ok' ? (status.last_success_at || status.last_sync_at || null) : (status.last_sync_at || null),
+          outcome,
           error: prev_error,
           error_account_id: prev_error_account_id,
         };
@@ -322,8 +295,8 @@
     return null;
   }
 
-  async function load_messages(reset = false) {
-    if (!db_path?.trim()) return;
+  async function load_messages(reset = false, previous = false, preserve_preview = false) {
+    if (!window_visible || !db_path?.trim()) return;
 
     if (message_list_loading || message_list_loading_more) {
       if (reset) message_list_pending_reset = true;
@@ -334,8 +307,8 @@
       message_list_offset = 0;
       message_list_has_more = true;
       messages = [];
-      selected_message_id = null;
-      selected_message = null;
+      if (!preserve_preview) clear_preview_state();
+      window_origin = 0; previous_available = false;
       message_list_generation += 1;
     }
 
@@ -352,10 +325,13 @@
       return;
     }
 
-    if (!message_list_has_more) return;
+    if (!previous && !message_list_has_more) return;
 
     const account_id = normalize_account_id(filter_account);
     const offset = message_list_offset;
+    const anchor = previous ? messages[0] : messages.at(-1);
+    const cursor = !reset && anchor ? {sort_timestamp:anchor.sort_timestamp, id:anchor.id} : null;
+    const {date_from,date_to} = date_bounds();
     const current_generation = message_list_generation;
     const page_size = is_searching ? SEARCH_PAGE_SIZE : MESSAGE_PAGE_SIZE;
 
@@ -372,7 +348,10 @@
         mailboxName: null,
         query: query,
         limit: page_size,
-        offset: offset,
+        offset: 0,
+        dateFrom: date_from, dateTo: date_to,
+        hasAttachments: filter_attachments === 'has' ? true : filter_attachments === 'none' ? false : null,
+        after: previous ? null : cursor, before: previous ? cursor : null,
         sortOrder: sort_order,
       });
       const fetched_count = Array.isArray(results) ? results.length : 0;
@@ -384,28 +363,26 @@
         results = [];
       }
 
-      if (filter_date) {
-        results = apply_date_filter(results, filter_date);
+      load_error = '';
+      const existing_ids = new Set(messages.map(m => m.id));
+      const unique_results = results.filter(m => !existing_ids.has(m.id));
+      const next_messages = previous ? [...unique_results, ...messages] : [...messages, ...unique_results];
+      if (previous) {
+        window_origin = Math.max(0, window_origin - unique_results.length);
+        messages = next_messages.slice(0, MAX_IN_MEMORY_MESSAGES);
+        previous_available = fetched_count === page_size && window_origin > 0;
+        message_list_has_more = true;
+      } else {
+        const removed = Math.max(0, next_messages.length - MAX_IN_MEMORY_MESSAGES);
+        messages = next_messages.slice(removed);
+        window_origin += removed;
+        previous_available = window_origin > 0;
+        message_list_offset = offset + fetched_count;
+        message_list_has_more = fetched_count === page_size;
       }
-
-      if (filter_attachments === 'has') {
-        // results = results.filter(m => m.has_attachments);
-      } else if (filter_attachments === 'none') {
-        // results = results.filter(m => !m.has_attachments);
-      }
-
-      // Deduplicate by message_blob_id to prevent duplicates from pagination overlap.
-      const existing_ids = new Set(messages.map(m => m.message_blob_id));
-      const unique_results = results.filter(m => !existing_ids.has(m.message_blob_id));
-      const next_messages = [...messages, ...unique_results];
-      // Keep a bounded message window to reduce long-session memory growth.
-      messages = next_messages.length > MAX_IN_MEMORY_MESSAGES
-        ? next_messages.slice(next_messages.length - MAX_IN_MEMORY_MESSAGES)
-        : next_messages;
-      message_list_offset = offset + fetched_count;
-      message_list_has_more = fetched_count === page_size;
     } catch (err) {
-      console.error('load_messages failed:', err);
+      if (current_generation !== message_list_generation || !window_visible) return;
+      load_error = err instanceof Error ? err.message : String(err);
       if (reset) {
         messages = [];
       }
@@ -457,75 +434,20 @@
     return date;
   }
 
-  function apply_date_filter(results, filter) {
-    if (!filter) return results;
-
-    const now = new Date();
-    const today_start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-
-    return results.filter((m) => {
-      if (!m.date_header) return false;
-      try {
-        const date = new Date(m.date_header);
-
-        switch (filter) {
-          case 'today':
-            return date >= today_start;
-          case 'last7':
-            return date >= new Date(today_start.getTime() - 7 * MS_PER_DAY);
-          case 'last30':
-            return date >= new Date(today_start.getTime() - 30 * MS_PER_DAY);
-          case 'this_year':
-            return date.getFullYear() === CURRENT_YEAR;
-          case 'last_year':
-            return date.getFullYear() === LAST_YEAR;
-          case 'q1':
-            return date.getFullYear() === LAST_YEAR && date.getMonth() >= 0 && date.getMonth() <= 2;
-          case 'q2':
-            return date.getFullYear() === LAST_YEAR && date.getMonth() >= 3 && date.getMonth() <= 5;
-          case 'q3':
-            return date.getFullYear() === LAST_YEAR && date.getMonth() >= 6 && date.getMonth() <= 8;
-          case 'q4':
-            return date.getFullYear() === LAST_YEAR && date.getMonth() >= 9 && date.getMonth() <= 11;
-          case 'custom': {
-            let start_date = parse_date_input_yyyy_mm_dd(custom_range_start);
-            let end_date = parse_date_input_yyyy_mm_dd(custom_range_end);
-
-            if (!start_date && !end_date) {
-              return true;
-            }
-
-            if (start_date && end_date && end_date < start_date) {
-              const tmp = start_date;
-              start_date = end_date;
-              end_date = tmp;
-            }
-
-            if (start_date && date < start_date) {
-              return false;
-            }
-
-            if (end_date) {
-              // Make end date inclusive (end at start of following day).
-              const end_exclusive = new Date(
-                end_date.getFullYear(),
-                end_date.getMonth(),
-                end_date.getDate() + 1
-              );
-              if (date >= end_exclusive) {
-                return false;
-              }
-            }
-
-            return true;
-          }
-          default:
-            return true;
-        }
-      } catch {
-        return false;
-      }
-    });
+  function date_bounds() {
+    const now = new Date(); const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    let start = null, end = null;
+    if (filter_date === 'today') start = today;
+    if (filter_date === 'last7' || filter_date === 'last30') start = new Date(today.getTime() - (filter_date === 'last7' ? 7 : 30) * MS_PER_DAY);
+    if (filter_date === 'this_year') {start = new Date(CURRENT_YEAR,0,1);end = new Date(CURRENT_YEAR+1,0,1);}
+    if (filter_date === 'last_year') {start = new Date(LAST_YEAR,0,1);end = new Date(CURRENT_YEAR,0,1);}
+    if (/^q[1-4]$/.test(filter_date ?? '')) {const month=(Number(filter_date[1])-1)*3;start=new Date(LAST_YEAR,month,1);end=new Date(LAST_YEAR,month+3,1);}
+    if (filter_date === 'custom') {
+      start = parse_date_input_yyyy_mm_dd(custom_range_start); end = parse_date_input_yyyy_mm_dd(custom_range_end);
+      if (start && end && end < start) [start,end] = [end,start];
+      if (end) end = new Date(end.getFullYear(),end.getMonth(),end.getDate()+1);
+    }
+    return {date_from:start ? Math.floor(start.getTime()/1000) : null,date_to:end ? Math.floor(end.getTime()/1000) : null};
   }
 
   function clear_custom_range() {
@@ -535,30 +457,33 @@
   }
 
   async function handle_message_click(message) {
-    selected_message_id = message.id;
+    if (!window_visible) return;
+    const generation = ++preview_generation;
+    selected_message_id = message.id; selected_message = null;
     message_loading = true;
 
     try {
-      selected_message = await tauri_invoke('get_message_detail', {
+      const detail = await tauri_invoke('get_message_detail', {
         dbPath: db_path,
         messageBlobId: message.message_blob_id,
       });
+      if (generation === preview_generation && window_visible) selected_message = detail;
     } catch (err) {
-      console.error('Failed to load message:', err);
-      selected_message = null;
+      if (generation === preview_generation && window_visible) { selected_message = null; load_error = String(err); }
     } finally {
-      message_loading = false;
+      if (generation === preview_generation) message_loading = false;
     }
   }
 
   function handle_toggle_selection(id) {
     const new_set = new Set(selected_for_export);
     if (new_set.has(id)) {
-      new_set.delete(id);
+      new_set.delete(id); selected_rows.delete(id);
     } else {
-      new_set.add(id);
+      if (new_set.size >= 10000) {load_error = 'Select at most 10000 messages per export.'; return;}
+      new_set.add(id); const row = messages.find(m => m.id === id); if (row) selected_rows.set(id, row);
     }
-    selected_for_export = new_set;
+    selected_for_export = new_set; selected_rows = new Map(selected_rows);
 
     // If bulk mode enabled when selection made
     if (new_set.size > 0 && !bulk_mode) {
@@ -576,7 +501,7 @@
       // Exiting bulk mode
       bulk_mode = false;
       viewing_selection = false;
-      selected_for_export = new Set();
+      selected_for_export = new Set(); selected_rows = new Map();
     } else {
       // Entering bulk mode
       bulk_mode = true;
@@ -592,7 +517,7 @@
   }
 
   function clear_selection() {
-    selected_for_export = new Set();
+    selected_for_export = new Set(); selected_rows = new Map();
     bulk_mode = false;
     viewing_selection = false;
   }
@@ -620,12 +545,14 @@
         outputPath: output_path,
       });
     } catch (err) {
-      console.error('Export failed:', err);
+      load_error = String(err);
     }
   }
 
   async function export_bulk() {
-    if (selected_for_export.size === 0) return;
+    if (selected_for_export.size === 0 || export_operation_id || export_choosing) return;
+    const selected_blob_ids = [...new Set([...selected_rows.values()].map(m => m.message_blob_id))];
+    export_choosing = true;
 
     let output_path = null;
     try {
@@ -634,25 +561,52 @@
         defaultPath: DEFAULT_EXPORT_FILENAME,
         filters: [{ name: 'ZIP archive', extensions: ['zip'] }],
       });
-    } catch {
+    } catch (err) {
+      export_message = err instanceof Error ? err.message : String(err);
       return;
+    } finally {
+      export_choosing = false;
     }
 
-    if (!output_path) return;
+    if (!output_path || disposed) return;
+    const operation_id = crypto.randomUUID();
+    export_operation_id = operation_id;
+    export_cancel_requested = false;
+    export_message = 'Exporting selected emails…';
 
     try {
-      // TODO: Need backend command for bulk export with specific IDs
       await tauri_invoke('export_auditor_package', {
         dbPath: db_path,
         outputZipPath: output_path,
+        selectedBlobIds: selected_blob_ids,
+        operationId: operation_id,
       });
+      export_message = 'Selected emails exported.';
     } catch (err) {
-      console.error('Bulk export failed:', err);
+      export_message = err instanceof Error ? err.message : String(err);
+    } finally {
+      export_operation_id = '';
+      export_cancel_requested = false;
+    }
+  }
+
+  async function cancel_bulk_export() {
+    const operation_id = export_operation_id;
+    if (!operation_id || export_cancel_requested) return;
+    export_cancel_requested = true;
+    try {
+      const published = await tauri_invoke('cancel_auditor_export', {operationId:operation_id});
+      if (export_operation_id === operation_id) export_message = published ? 'Export saved. Finishing…' : 'Canceling export…';
+    } catch (err) {
+      if (export_operation_id === operation_id) {
+        export_cancel_requested = false;
+        export_message = `Could not cancel export: ${err instanceof Error ? err.message : String(err)}`;
+      }
     }
   }
 
   async function handle_sync() {
-    if (!db_path?.trim()) return;
+    if (!window_visible || !db_path?.trim()) return;
     // Prevent rapid double-clicks from triggering multiple syncs.
     if (sync_status.syncing) return;
 
@@ -683,7 +637,7 @@
       }
 
       void load_sync_status();
-      void load_messages(true);
+      void load_messages(true, false, true);
     } catch (err) {
       sync_status = {
         ...sync_status,
@@ -781,7 +735,7 @@
   // Determine what to show in the list
   let displayed_messages = $derived.by(() => {
     if (viewing_selection) {
-      return messages.filter((m) => selected_for_export.has(m.id));
+      return [...selected_rows.values()];
     }
     return messages;
   });
@@ -793,6 +747,8 @@
 <svelte:window onmousemove={do_resize} onmouseup={stop_resize} onkeydown={handle_dashboard_keydown} />
 
 <div class="main-dashboard">
+  {#if load_error}<p role="alert">{load_error} <button onclick={() => {void load_accounts();void load_messages(true);}}>Retry</button></p>{/if}
+  {#if export_message}<p role="status">{export_message} {#if export_operation_id}<button disabled={export_cancel_requested} onclick={cancel_bulk_export}>Cancel export</button>{/if}</p>{/if}
   <!-- Top Row: Search + Filters -->
   <div class="top-row">
     <input
@@ -807,6 +763,7 @@
     <div class="filters">
       <select
         class="filter-select"
+        aria-label="Filter by account"
         bind:value={filter_account}
         onchange={(e) => {
           if (e.target.value === '__manage__') {
@@ -817,13 +774,13 @@
       >
         <option value={null}>All accounts</option>
         {#each accounts as account (account.id)}
-          <option value={account.id}>{account.email_address}</option>
+          <option value={account.id}>{account.email_address}{account.disabled ? ' (archive only)' : ''}</option>
         {/each}
         <option disabled>───────────</option>
         <option value="__manage__">Manage accounts...</option>
       </select>
 
-      <select class="filter-select" bind:value={filter_date}>
+      <select class="filter-select" aria-label="Filter by date" bind:value={filter_date}>
         <option value={null}>Any date</option>
         <option value="today">Today</option>
         <option value="last7">Last 7 days</option>
@@ -839,7 +796,7 @@
         <option value="custom">Custom range…</option>
       </select>
 
-      <select class="filter-select filter-small" bind:value={filter_attachments}>
+      <select class="filter-select filter-small" aria-label="Filter by attachments" bind:value={filter_attachments}>
         <option value={null}>All</option>
         <option value="has">Has attachments</option>
         <option value="none">No attachments</option>
@@ -879,16 +836,16 @@
                 {selected_for_export.size} selected
               </button>
             {:else}
-              <span class="bulk-mode-hint">Click messages to select</span>
+              <span class="bulk-mode-hint">Use checkboxes to select</span>
             {/if}
           </div>
           <div class="bulk-header-right">
             <div class="bulk-actions">
               {#if viewing_selection}
-                <button type="button" class="bulk-button primary" onclick={export_bulk}>Export</button>
+                <button type="button" class="bulk-button primary" onclick={export_bulk} disabled={!!export_operation_id || export_choosing}>Export</button>
                 <button type="button" class="bulk-button" onclick={exit_selection_view}>Back</button>
               {:else if selected_for_export.size > 0}
-                <button type="button" class="bulk-button primary" onclick={export_bulk}>Export</button>
+                <button type="button" class="bulk-button primary" onclick={export_bulk} disabled={!!export_operation_id || export_choosing}>Export</button>
                 <button type="button" class="bulk-button" onclick={clear_selection}>Clear</button>
                 <button type="button" class="bulk-button" onclick={toggle_bulk_mode}>Done</button>
               {:else}
@@ -913,6 +870,7 @@
         {/if}
       </div>
 
+      {#if previous_available && !viewing_selection}<button onclick={() => load_messages(false,true)} disabled={message_list_loading_more}>Load earlier page</button>{/if}
       <!-- Message List -->
       {#if accounts.length === 0}
         <EmptyState
@@ -946,6 +904,8 @@
         {/if}
       {:else}
         <VirtualList
+          origin={viewing_selection ? 0 : window_origin}
+          on_reach_start={() => {if (previous_available && !viewing_selection) void load_messages(false,true);}}
           items={displayed_messages}
           bulk_mode={bulk_mode}
           selected_ids={selected_for_export}
@@ -985,6 +945,7 @@
 
   <!-- Status Bar -->
   <StatusBar
+    outcome={sync_status.outcome}
     syncing={sync_status.syncing}
     syncing_account={sync_status.syncing_account}
     last_sync={sync_status.last_sync}

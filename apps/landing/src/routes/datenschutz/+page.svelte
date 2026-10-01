@@ -1,7 +1,3 @@
-<script>
-  import { app } from '$lib/app.svelte.js';
-</script>
-
 <svelte:head>
   <title>Datenschutzerklärung — Amberize</title>
 </svelte:head>
@@ -12,20 +8,17 @@
   <div class="plain-intro">
     <p>
       <strong>Kurzfassung:</strong> Diese Website verwendet keine Cookies, kein Tracking und keine
-      Analysetools. Die Desktop-App Amberize speichert alle Daten ausschließlich lokal auf Ihrem
-      Computer — wir haben keine Server, an die Daten gesendet werden könnten, und wir wissen nicht
-      einmal, dass Sie die App nutzen.
+      Analysetools. Die Desktop-App Amberize speichert archivierte E-Mails lokal auf Ihrem Computer. Sie verbindet sich direkt mit Ihrem E-Mail-Anbieter; bei Google-Anmeldung zusätzlich mit Googles Anmeldedienst und für Update-Prüfungen mit GitHub. E-Mail-Inhalte und Zugangsdaten werden nicht an den Entwickler übermittelt.
     </p>
   </div>
 
   <h2>1. Verantwortlicher</h2>
   <p>
     Johannes Mutter<br />
-    <!-- TODO: Adresse eintragen -->
-    [Straße und Hausnummer]<br />
-    [PLZ Ort]<br />
+    Lange Str. 106<br />
+    78256 Steißlingen<br />
     Deutschland<br />
-    E-Mail: [TODO: E-Mail-Adresse]
+    E-Mail: <a href="mailto:m@mutter.co">m@mutter.co</a>
   </p>
 
   <h2>2. Übersicht der Verarbeitungen</h2>
@@ -42,8 +35,7 @@
 
   <h2>3. Hosting und Server-Log-Dateien</h2>
   <p>
-    Diese Website wird bei einem externen Dienstleister gehostet. Beim Aufruf der Website
-    erhebt der Hoster automatisch Informationen in Server-Log-Dateien, die Ihr Browser übermittelt:
+    Diese Website wird bei Fly.io gehostet; die Anwendung ist für die Region Frankfurt konfiguriert. Beim Aufruf werden technisch notwendige Verbindungsdaten verarbeitet. In Server-Protokollen können Informationen gespeichert werden, die Ihr Browser übermittelt:
   </p>
   <ul>
     <li>IP-Adresse</li>
@@ -54,9 +46,7 @@
   </ul>
   <p>
     Diese Daten werden nicht mit anderen Datenquellen zusammengeführt. Die Erfassung erfolgt
-    auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO — der Betreiber hat ein berechtigtes Interesse
-    an der technisch fehlerfreien Bereitstellung der Website. Server-Log-Dateien werden nach
-    spätestens 30 Tagen gelöscht.
+    auf Grundlage von Art. 6 Abs. 1 lit. f DSGVO — der Betreiber hat ein berechtigtes Interesse an der technisch fehlerfreien Bereitstellung der Website. Weitere Informationen zur Verarbeitung durch den Hosting-Anbieter finden Sie in der <a href="https://fly.io/legal/privacy-policy/" target="_blank" rel="noopener">Datenschutzerklärung von Fly.io</a>.
   </p>
 
   <h2>4. Cookies und Tracking</h2>
@@ -75,29 +65,30 @@
 
   <h3>Lokale Datenverarbeitung</h3>
   <p>
-    Die Desktop-Anwendung Amberize verarbeitet alle Daten ausschließlich lokal auf Ihrem Computer.
-    Es werden keine Daten an Server des Entwicklers oder an Dritte übermittelt.
+    Amberize verarbeitet und speichert Ihre archivierten E-Mails auf Ihrem Computer. Der Abruf erfolgt direkt beim von Ihnen verbundenen E-Mail-Anbieter. Archivierte Nachrichten, Anhänge und Zugangsdaten werden nicht an Server des Entwicklers gesendet. Wenn Sie selbst ein Archiv oder einen Export weitergeben oder in einem synchronisierten Ordner speichern, bestimmen Sie dessen Empfänger.
   </p>
 
   <h3>E-Mail-Zugangsdaten</h3>
   <p>
-    Ihre E-Mail-Zugangsdaten (Benutzername und Passwort) werden ausschließlich im sicheren
-    Anmeldedatenspeicher Ihres Betriebssystems gespeichert (macOS-Schlüsselbund, Windows
-    Credential Manager bzw. Linux Secret Service / GNOME Keyring).
+    Ab Desktop-Version 0.2.4 werden Passwörter sowie OAuth-Zugriffs- und Refresh-Tokens auf allen unterstützten Plattformen im sicheren Anmeldedatenspeicher Ihres Betriebssystems gespeichert (macOS-Schlüsselbund, Windows Credential Manager bzw. Linux Secret Service / GNOME Keyring). Kontoeinstellungen wie E-Mail-Adresse, Server und Ordnerauswahl gehören zur lokalen Archivdatenbank bzw. App-Konfiguration.
   </p>
 
   <h3>E-Mail-Archivierung</h3>
   <p>
     Archivierte E-Mails werden ausschließlich in einer lokalen Datenbank auf Ihrem Computer
-    gespeichert. Die Verbindung zu Ihrem E-Mail-Server erfolgt direkt über verschlüsseltes
-    TLS (IMAP/IMAPS). Es findet keine Übertragung an externe Server des Entwicklers statt.
+    gespeichert. Die Verbindung zu Ihrem E-Mail-Server erfolgt direkt über verschlüsseltes TLS (IMAP/IMAPS). Unverschlüsselte IMAP-Verbindungen werden nicht unterstützt. Es findet keine Übertragung an externe Server des Entwicklers statt. Die Archivdatenbank selbst ist nicht durch Amberize verschlüsselt. Schützen Sie Ihr Gerät und Ihre Sicherungskopien entsprechend.
   </p>
 
+  <h3>Google-Anmeldung und Gmail-Daten</h3>
+  <p>Wenn Sie ein Google-Konto verbinden, öffnen Sie Googles Anmeldung in Ihrem Browser und erteilen dort die angezeigten Berechtigungen. Amberize liest die Konto-E-Mail-Adresse, die ausgewählten Ordner sowie Nachrichten einschließlich Kopfzeilen, Nachrichtentexten und Anhängen für die lokale Archivierung, Suche, Anzeige und den von Ihnen gestarteten Export. Die aktuelle Gmail-IMAP-Verbindung erfordert technisch die Google-Berechtigung für vollständigen Mailzugriff; Amberize nutzt sie zum Lesen und archiviert lokal. Die App sendet keine Nachrichten und verändert oder löscht keine Nachrichten auf dem Gmail-Server.</p>
+  <p>Google-Nutzerdaten werden nicht verkauft, für Werbung oder Profilbildung verwendet oder zum Training von KI-Modellen eingesetzt. Der Entwickler erhält keinen automatischen Zugriff auf Ihr Postfach oder Ihr Archiv. Die Nutzung von Google-Daten richtet sich nach der <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noopener">Google API Services User Data Policy</a>, einschließlich ihrer Limited-Use-Anforderungen.</p>
+  <p>Sie können die Verbindung in Amberize entfernen und die Berechtigung außerdem in Ihrem <a href="https://myaccount.google.com/connections" target="_blank" rel="noopener">Google-Konto</a> widerrufen. Bereits archivierte lokale Kopien bleiben zur Aufbewahrung erhalten. Sie können Ihre lokale Archivdatei und selbst angelegte Sicherungen löschen; der Entwickler kann diese Dateien nicht aus der Ferne löschen. Für Googles Verarbeitung während der Anmeldung gilt die <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google-Datenschutzerklärung</a>.</p>
+
+  <h3>Updates und externe Inhalte</h3>
+  <p>Für Update-Prüfungen und Downloads kontaktiert Amberize GitHub über HTTPS. Dabei fallen beim Anbieter technisch erforderliche Verbindungsdaten wie die IP-Adresse an; Nachrichteninhalte und Zugangsdaten werden nicht mitgesendet. Die Anzeige externer Bilder in Nachrichten ist standardmäßig gesperrt. Wenn Sie deren Laden ausdrücklich erlauben, kann der jeweilige Bildanbieter Ihre IP-Adresse und den Abrufzeitpunkt erhalten.</p>
+
   <h3>Keine Telemetrie</h3>
-  <p>
-    Amberize sammelt keinerlei Nutzungsdaten, Analysen oder Telemetrie. Die Anwendung
-    kommuniziert ausschließlich mit dem von Ihnen konfigurierten E-Mail-Server.
-  </p>
+  <p>Amberize sendet keine Nutzungsanalysen oder Telemetrie an den Entwickler. Die oben beschriebenen Verbindungen zum E-Mail-Anbieter, zur Google-Anmeldung, zu GitHub und ausdrücklich freigegebenen externen Inhalten dienen den jeweiligen Funktionen.</p>
 
   <h2>7. Ihre Rechte</h2>
   <p>

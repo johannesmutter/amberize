@@ -28,20 +28,37 @@ use email_archiver_storage::EVENT_KIND_SYNC_FINISHED;
 
 pub fn start_background_sync(app_handle: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(BACKGROUND_SYNC_INITIAL_DELAY).await;
+        {
+            let state = app_handle.state::<AppState>();
+            tokio::select! {_=tokio::time::sleep(BACKGROUND_SYNC_INITIAL_DELAY)=>{},_=state.sync_wakeup.notified()=>{}}
+        }
 
         let mut sync_cycle_count: u64 = 0;
+        let mut consecutive_failures = 0_u32;
 
         loop {
             let start = tokio::time::Instant::now();
             let result = run_sync_all_accounts_once(&app_handle).await;
-            let elapsed = start.elapsed();
+            let failed = result
+                .as_ref()
+                .map_or(true, |status| status.error.is_some());
+            consecutive_failures = if failed {
+                consecutive_failures.saturating_add(1)
+            } else {
+                0
+            };
 
             // After each successful sync, run periodic integrity checks.
             if result.is_ok() {
                 sync_cycle_count += 1;
                 let run_full = sync_cycle_count.is_multiple_of(FULL_VERIFICATION_EVERY_N_CYCLES);
-                run_periodic_integrity_check(&app_handle, run_full);
+                let audit_app = app_handle.clone();
+                let _ = tauri::async_runtime::spawn_blocking(move || {
+                    let state = audit_app.state::<AppState>();
+                    let _guard = state.sync_lock.blocking_lock();
+                    run_periodic_integrity_check(&audit_app, run_full)
+                })
+                .await;
             }
 
             let target_interval = match &result {
@@ -54,15 +71,31 @@ pub fn start_background_sync(app_handle: AppHandle) {
                 _ => {
                     // Read the user-configured interval from AppState.
                     let state = app_handle.state::<AppState>();
-                    Duration::from_secs(state.sync_interval_secs())
+                    Duration::from_secs(retry_interval_secs(
+                        state.sync_interval_secs(),
+                        consecutive_failures,
+                    ))
                 }
             };
 
             // Subtract elapsed sync time to compensate for timer drift.
-            let sleep_for = target_interval.saturating_sub(elapsed);
-            tokio::time::sleep(sleep_for).await;
+            let sleep_for = target_interval
+                .saturating_sub(start.elapsed())
+                .max(Duration::from_secs(30));
+            let state = app_handle.state::<AppState>();
+            tokio::select! {_=tokio::time::sleep(sleep_for)=>{},_=state.sync_wakeup.notified()=>{}}
         }
     });
+}
+
+fn retry_interval_secs(interval: u64, consecutive_failures: u32) -> u64 {
+    if consecutive_failures == 0 {
+        return interval;
+    }
+    interval
+        .saturating_mul(1_u64 << consecutive_failures.min(6))
+        .min(3600)
+        .max(interval)
 }
 
 // ---------------------------------------------------------------------------
@@ -80,12 +113,15 @@ pub fn record_startup_and_detect_gaps(app_handle: &AppHandle) {
     let Some(db_path) = get_active_db_path(app_handle) else {
         return;
     };
-    let Ok(storage) = Storage::open_or_create(&db_path) else {
+    let Ok(storage) = Storage::open_existing(&db_path) else {
         return;
     };
 
     let now = now_rfc3339();
 
+    // Capture the previous heartbeat before adding this start event.
+    let last_heartbeat = get_last_event_time(&storage, EVENT_KIND_SYNC_FINISHED)
+        .or_else(|| get_last_event_time(&storage, EVENT_KIND_APP_STARTED));
     // 1. Record app_started.
     let boot_time_rfc = get_system_boot_time_rfc3339().unwrap_or_default();
     let _ = storage.append_event(&InsertEventInput {
@@ -103,9 +139,6 @@ pub fn record_startup_and_detect_gaps(app_handle: &AppHandle) {
     // 2. Check for a coverage gap.
     //    Use the last `sync_finished` event as the best indicator of when the
     //    app was last active.  Fall back to `app_started` for first-run cases.
-    let last_heartbeat = get_last_event_time(&storage, EVENT_KIND_SYNC_FINISHED)
-        .or_else(|| get_last_event_time(&storage, EVENT_KIND_APP_STARTED));
-
     let Some(last_hb) = last_heartbeat else {
         // First run ever — no gap to report.
         return;
@@ -181,20 +214,32 @@ pub fn verify_integrity_at_startup(app_handle: &AppHandle) {
     let Some(db_path) = get_active_db_path(app_handle) else {
         return;
     };
-    let Ok(storage) = Storage::open_or_create(&db_path) else {
-        return;
-    };
-
-    let status = match storage.verify_integrity() {
+    let result = Storage::open_existing(&db_path).and_then(|storage| {
+        let status = storage.verify_integrity()?;
+        Ok((storage, status))
+    });
+    let (storage, status) = match result {
         Ok(s) => s,
-        Err(_) => return,
+        Err(error) => {
+            let state = app_handle.state::<AppState>();
+            if let Ok(mut warning) = state.startup_warning.lock() {
+                *warning = Some(format!("Archive integrity could not be verified: {error}. Open Amberize to review the archive."));
+            }
+            state.set_tray_status_text("Archive verification failed — open Amberize");
+            let _ = app_handle.emit("integrity_status_updated", ());
+            return;
+        }
     };
 
     // Persist the result so the UI can query it.
     let state = app_handle.state::<AppState>();
     if let Ok(mut guard) = state.integrity_status.lock() {
-        *guard = Some(status.clone());
+        match guard.as_mut() {
+            Some(previous) => previous.merge_checked(status.clone()),
+            None => *guard = Some(status.clone()),
+        }
     }
+    let _ = app_handle.emit("integrity_status_updated", ());
 
     if status.ok {
         // Record a clean integrity_check event.
@@ -325,6 +370,7 @@ fn escape_json_value(s: &str) -> String {
 
 pub async fn run_sync_all_accounts_once(app_handle: &AppHandle) -> Result<UiSyncStatus, String> {
     let state = app_handle.state::<AppState>();
+    let _guard = state.sync_lock.lock().await;
 
     let db_path = {
         state
@@ -335,26 +381,24 @@ pub async fn run_sync_all_accounts_once(app_handle: &AppHandle) -> Result<UiSync
     };
     let Some(db_path) = db_path else {
         return Ok(UiSyncStatus {
+            last_success_at: None,
+            error: None,
             sync_in_progress: false,
             last_sync_at: None,
             last_sync_status: "not configured".to_string(),
         });
     };
 
-    let _guard = state.sync_lock.lock().await;
     state.set_sync_in_progress(true);
     state.set_tray_status_text("Status: syncing…");
     let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
 
-    let progress_handle = app_handle.clone();
-    let on_progress: SyncProgressFn = Box::new(move |p| {
-        let _ = progress_handle.emit(EVENT_SYNC_PROGRESS, p);
-    });
+    let on_progress = progress_callback(app_handle.clone());
 
     let now = now_rfc3339();
     let result = sync_all_accounts_inner(&db_path, &on_progress).await;
 
-    let next = match &result {
+    let mut next = match &result {
         Ok(summary) => {
             let status = if summary.accounts_with_errors > 0 {
                 "partial"
@@ -364,6 +408,8 @@ pub async fn run_sync_all_accounts_once(app_handle: &AppHandle) -> Result<UiSync
             let status_text = format_last_sync_status_text(status, now.as_str());
 
             UiSyncStatus {
+                last_success_at: None,
+                error: None,
                 sync_in_progress: false,
                 last_sync_at: Some(now.clone()),
                 last_sync_status: status_text,
@@ -372,6 +418,8 @@ pub async fn run_sync_all_accounts_once(app_handle: &AppHandle) -> Result<UiSync
         Err(_err) => {
             let status_text = format_last_sync_status_text("error", now.as_str());
             UiSyncStatus {
+                last_success_at: None,
+                error: None,
                 sync_in_progress: false,
                 last_sync_at: Some(now.clone()),
                 last_sync_status: status_text,
@@ -380,10 +428,17 @@ pub async fn run_sync_all_accounts_once(app_handle: &AppHandle) -> Result<UiSync
     };
 
     if let Ok(mut guard) = state.last_sync.lock() {
+        next.preserve_success(&guard);
+        next.error = match &result {
+            Err(error) => Some(error.clone()),
+            Ok(summary) if !summary.errors.is_empty() => Some(summary.errors.join("; ")),
+            _ => None,
+        };
         *guard = next.clone();
     }
 
     state.set_sync_in_progress(false);
+    persist_sync_status(&db_path, &state);
     state.set_tray_status_text(&format!("Last sync: {}", next.last_sync_status));
 
     let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
@@ -391,7 +446,36 @@ pub async fn run_sync_all_accounts_once(app_handle: &AppHandle) -> Result<UiSync
     result.map(|_summary| next)
 }
 
+/// Persist the displayed aggregate outcome, including the previous success, so
+/// an individual account's checkpoint cannot masquerade as whole-cycle success.
+pub fn persist_sync_status(db_path: &str, state: &AppState) {
+    let result = (|| -> Result<(), String> {
+        let status = state.last_sync.lock().map_err(|e| e.to_string())?.clone();
+        let detail = serde_json::to_string(&status).map_err(|e| e.to_string())?;
+        Storage::open_existing(db_path)
+            .map_err(|e| e.to_string())?
+            .append_event(&InsertEventInput {
+                occurred_at: now_rfc3339(),
+                kind: "ui_sync_finished".into(),
+                account_id: None,
+                mailbox_id: None,
+                message_blob_id: None,
+                detail,
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+    if let Err(error) = result {
+        if let Ok(mut warning) = state.startup_warning.lock() {
+            *warning = Some(format!(
+                "The latest sync outcome could not be saved: {error}"
+            ));
+        }
+    }
+}
+
 struct AggregateSyncSummary {
+    errors: Vec<String>,
     accounts_synced: usize,
     accounts_with_errors: usize,
     mailboxes_seen_total: usize,
@@ -404,11 +488,12 @@ async fn sync_all_accounts_inner(
     db_path: &str,
     on_progress: &SyncProgressFn,
 ) -> Result<AggregateSyncSummary, String> {
-    let storage = Storage::open_or_create(db_path).map_err(|e| e.to_string())?;
+    let storage = Storage::open_existing(db_path).map_err(|e| e.to_string())?;
     let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
     let secret_store = KeychainSecretStore::new();
 
     let mut aggregate = AggregateSyncSummary {
+        errors: vec![],
         accounts_synced: 0,
         accounts_with_errors: 0,
         mailboxes_seen_total: 0,
@@ -432,12 +517,15 @@ async fn sync_all_accounts_inner(
                 aggregate.messages_fetched_total += summary.messages_fetched;
                 aggregate.messages_ingested_total += summary.messages_ingested;
                 if summary.had_mailbox_errors {
+                    aggregate.errors.extend(summary.errors);
                     aggregate.accounts_with_errors += 1;
                 }
             }
             Err(err) => {
                 aggregate.accounts_with_errors += 1;
-                let _ = err;
+                aggregate
+                    .errors
+                    .push(format!("{}: {err}", account.email_address));
             }
         }
     }
@@ -458,30 +546,39 @@ fn run_periodic_integrity_check(app_handle: &AppHandle, run_full_chain: bool) {
     let Some(db_path) = get_active_db_path(app_handle) else {
         return;
     };
-    let Ok(storage) = Storage::open_or_create(&db_path) else {
-        return;
-    };
-
-    let status = if run_full_chain {
-        // Full verification (chain + root hash).
-        match storage.verify_integrity() {
-            Ok(s) => s,
-            Err(_) => return,
-        }
-    } else {
-        // Quick root-hash-only check.
-        match storage.verify_root_hash_only() {
-            Ok(s) => s,
-            Err(_) => return,
+    let result = Storage::open_existing(&db_path).and_then(|storage| {
+        let status = if run_full_chain {
+            storage.verify_integrity()?
+        } else {
+            storage.verify_root_hash_only()?
+        };
+        Ok((storage, status))
+    });
+    let (storage, mut status) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let state = app_handle.state::<AppState>();
+            if let Ok(mut warning) = state.startup_warning.lock() {
+                *warning = Some(format!("Archive integrity could not be verified: {error}"));
+            }
+            let _ = app_handle.emit("integrity_status_updated", ());
+            return;
         }
     };
 
     // Update the app state so the UI reflects the latest status.
     let state = app_handle.state::<AppState>();
     if let Ok(mut guard) = state.integrity_status.lock() {
-        *guard = Some(status.clone());
+        match guard.as_mut() {
+            Some(previous) => {
+                previous.merge_checked(status.clone());
+                status = previous.clone();
+            }
+            None => *guard = Some(status.clone()),
+        }
     }
 
+    let _ = app_handle.emit("integrity_status_updated", ());
     let check_kind = if run_full_chain { "full" } else { "quick" };
 
     if status.ok {
@@ -522,4 +619,40 @@ fn now_rfc3339() -> String {
     let now = time::OffsetDateTime::now_utc();
     now.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+pub fn progress_callback(app: AppHandle) -> SyncProgressFn {
+    let last = std::sync::Mutex::new((
+        std::time::Instant::now() - Duration::from_secs(1),
+        String::new(),
+    ));
+    Box::new(move |progress| {
+        if !app
+            .state::<AppState>()
+            .window_visible
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let Ok(mut last) = last.lock() else {
+            return;
+        };
+        if last.0.elapsed() < Duration::from_millis(250) && last.1 == progress.mailbox_name {
+            return;
+        }
+        *last = (std::time::Instant::now(), progress.mailbox_name.clone());
+        let _ = app.emit(EVENT_SYNC_PROGRESS, progress);
+    })
+}
+
+#[cfg(test)]
+mod retry_tests {
+    use super::*;
+    #[test]
+    fn repeated_failures_back_off_without_shortening_the_user_interval() {
+        assert_eq!(retry_interval_secs(300, 0), 300);
+        assert_eq!(retry_interval_secs(300, 1), 600);
+        assert_eq!(retry_interval_secs(300, 20), 3600);
+        assert_eq!(retry_interval_secs(86400, 20), 86400);
+    }
 }

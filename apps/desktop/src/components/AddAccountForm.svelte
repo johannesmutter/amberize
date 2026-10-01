@@ -1,5 +1,5 @@
 <script>
-  import { tauri_invoke } from '../lib/tauri_bridge.js';
+  import { tauri_invoke, listen_scoped } from '../lib/tauri_bridge.js';
 
   let { db_path, on_success, on_cancel } = $props();
 
@@ -24,6 +24,18 @@
    * are silently discarded.
    */
   let google_request_generation = 0;
+  let google_operation_id = null;
+  let google_authorization_url = $state('');
+  let google_browser_error = $state('');
+  $effect(() => listen_scoped({google_oauth_browser: event => {
+    if (event.payload.operation_id !== google_operation_id) return;
+    google_authorization_url = event.payload.url;
+    google_browser_error = event.payload.launch_error ?? '';
+  }}));
+  let google_configured = $state(false);
+  let google_client_id = $state('');
+  let google_client_secret = $state('');
+  $effect(() => { void tauri_invoke('get_google_oauth_configured').then(value => { google_configured = value; }).catch(err => { error_message = String(err); }); return () => { if (google_operation_id) void tauri_invoke('cancel_google_oauth', {operationId:google_operation_id}).catch(() => {}); }; });
 
   // After connection
   /** @type {any | null} */
@@ -73,7 +85,7 @@
       return 'Unexpected response from the mail server. Please verify your settings.';
     }
     if (raw.includes('not configured')) {
-      return 'Google sign-in is not available. The app was not built with Google OAuth credentials.';
+      return 'Configure your Google Desktop OAuth client below, then sign in again.';
     }
     if (raw.includes('CallbackTimeout')) {
       return 'Authorization timed out. Please try again.';
@@ -160,10 +172,15 @@
     error_message = '';
     if (!validate_google()) return;
 
+    if (busy) return;
     const this_generation = ++google_request_generation;
+    const operation_id = crypto.randomUUID(); google_operation_id = operation_id;
+    google_authorization_url = ''; google_browser_error = '';
     busy = true;
     try {
+      if (!google_configured) { await tauri_invoke('set_google_oauth_client', {input:{client_id:google_client_id.trim(),client_secret:google_client_secret.trim()}}); google_configured = true; google_client_secret = ''; }
       const result = await tauri_invoke('add_google_oauth_account', {
+        operationId: operation_id,
         dbPath: db_path,
         input: {
           email: google_email.trim(),
@@ -174,13 +191,13 @@
       if (this_generation !== google_request_generation) return;
       created_account = result.account;
       mailboxes = result.mailboxes ?? [];
-      step = 'folders';
+      step = 'folders'; google_operation_id = null;
     } catch (err) {
       if (this_generation !== google_request_generation) return;
       error_message = humanize_connection_error(err);
     } finally {
       if (this_generation === google_request_generation) {
-        busy = false;
+        busy = false; google_authorization_url = ''; google_browser_error = '';
       }
     }
   }
@@ -189,10 +206,14 @@
    * Cancel a pending Google OAuth flow.  Bumps the generation counter so
    * the in-flight backend response is silently ignored when it arrives.
    */
-  function cancel_google_auth() {
-    google_request_generation++;
-    busy = false;
-    error_message = '';
+  async function cancel_google_auth() {
+    const operation_id = google_operation_id;
+    if (!operation_id) return;
+    try {
+      const committed = await tauri_invoke('cancel_google_oauth', {operationId:operation_id});
+      if (committed != null) { error_message = 'Authorization already completed. The added account is shown below.'; return; }
+      google_request_generation++; google_operation_id = null; busy = false; error_message = ''; google_authorization_url = ''; google_browser_error = '';
+    } catch (err) { error_message = String(err); }
   }
 
   async function toggle_mailbox(mailbox) {
@@ -330,7 +351,23 @@
           </div>
         </form>
       {:else}
-        <!-- Google OAuth — simple sign-in flow -->
+        {#if !google_configured}
+          <details class="oauth-client" open>
+            <summary class="label">Configure a Google Desktop OAuth client</summary>
+            <div class="form oauth-client-fields">
+              <p class="hint">Use a Desktop app client from your Google Cloud project with Gmail access enabled.</p>
+              <div class="form-group">
+                <label class="label" for="google-client-id">Client ID</label>
+                <input id="google-client-id" class="input" bind:value={google_client_id} disabled={busy} />
+              </div>
+              <div class="form-group">
+                <label class="label" for="google-client-secret">Client secret</label>
+                <input id="google-client-secret" class="input" type="password" bind:value={google_client_secret} disabled={busy} />
+              </div>
+            </div>
+          </details>
+        {/if}
+        <!-- Google OAuth -->
         <p class="description">
           Sign in with your Google account to archive Gmail or Google Workspace emails.
         </p>
@@ -360,11 +397,15 @@
               <button type="button" class="btn" onclick={cancel_google_auth}>
                 Cancel
               </button>
-              <button type="button" class="btn" onclick={() => { cancel_google_auth(); handle_google_connect(); }}>
+              <button type="button" class="btn" onclick={async () => { await cancel_google_auth(); if (!busy) await handle_google_connect(); }}>
                 Retry
               </button>
               <span class="waiting-indicator">Waiting for authorization...</span>
             </div>
+            {#if google_authorization_url}
+              <p class="hint">{google_browser_error ? 'Amberize could not open your browser. ' : ''}If needed, copy this link into your browser to continue.</p>
+              <input class="input" aria-label="Google authorization link" readonly value={google_authorization_url} />
+            {/if}
           {:else}
             <div class="actions">
               <button type="button" class="btn" onclick={on_cancel}>
@@ -439,6 +480,18 @@
     color: var(--color-text-secondary);
     margin: 0 0 var(--space-xl);
     font-size: var(--font-size-sm);
+  }
+
+  .oauth-client {
+    margin-bottom: var(--space-xl);
+  }
+
+  .oauth-client summary {
+    cursor: pointer;
+  }
+
+  .oauth-client-fields {
+    margin-top: var(--space-md);
   }
 
   /* Auth method selector */

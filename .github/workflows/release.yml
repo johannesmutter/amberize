@@ -15,7 +15,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validation:
+    uses: ./.github/workflows/ci.yml
   build:
+    needs: validation
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +72,23 @@ jobs:
         working-directory: apps/desktop
         run: npm ci
 
+      - name: Require release signing configuration
+        shell: bash
+        env:
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$UPDATER_KEY" || { echo "::error::Updater signing key is required"; exit 1; }
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID; do
+              test -n "${!name}" || { echo "::error::Missing macOS signing/notarization setting: $name"; exit 1; }
+            done
+          fi
+
+      - name: Validate Apple notarization credentials before building
+        if: runner.os == 'macOS'
+        run: python3 scripts/check_notarization_auth.py --report "$RUNNER_TEMP/amberize-qa/notarization-authentication.json"
+
       - name: Build Tauri app (macOS signed + notarized)
         if: runner.os == 'macOS' && env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.APPLE_ID != '' && env.APPLE_PASSWORD != '' && env.APPLE_TEAM_ID != ''
         uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
@@ -79,18 +99,18 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npx tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
           tagName: ${{ github.ref_name }}
           releaseName: "Amberize ${{ github.ref_name }}"
           releaseBody: |
             See the full changelog in the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
           includeRelease: true
 
       - name: Build Tauri app
-        if: runner.os != 'macOS' || env.APPLE_CERTIFICATE == '' || env.APPLE_CERTIFICATE_PASSWORD == '' || env.APPLE_ID == '' || env.APPLE_PASSWORD == '' || env.APPLE_TEAM_ID == ''
+        if: runner.os != 'macOS'
         uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -99,12 +119,113 @@ jobs:
         with:
           projectPath: apps/desktop
           tauriScript: npx tauri
-          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
           tagName: ${{ github.ref_name }}
           releaseName: "Amberize ${{ github.ref_name }}"
           releaseBody: |
             See the full changelog in the [commit history](https://github.com/${{ github.repository }}/commits/${{ github.ref_name }}).
           releaseDraft: true
-          prerelease: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
           includeUpdaterJson: true
           includeRelease: true
+
+      - name: Verify AppImage metadata (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          appimages=("$GITHUB_WORKSPACE/target/${{ matrix.target }}/release/bundle/appimage/"*.AppImage)
+          if [ "${#appimages[@]}" -eq 0 ]; then
+            echo "::error::No AppImage was built"
+            exit 1
+          fi
+          extraction_dir=$(mktemp -d)
+          trap 'rm -rf "$extraction_dir"' EXIT
+          for appimage in "${appimages[@]}"; do
+            (
+              cd "$extraction_dir"
+              "$appimage" --appimage-extract > /dev/null
+              appdir="$extraction_dir/squashfs-root"
+              desktop_files=("$appdir/"*.desktop)
+              if [ "${#desktop_files[@]}" -ne 1 ]; then
+                echo "::error::AppImage must contain exactly one root desktop file"
+                exit 1
+              fi
+              for metadata in "$appdir/.DirIcon" "${desktop_files[0]}"; do
+                if [ ! -s "$metadata" ]; then
+                  echo "::error::Missing or broken AppImage metadata: $metadata"
+                  exit 1
+                fi
+                case "$(realpath "$metadata")" in
+                  "$appdir/"*) ;;
+                  *) echo "::error::AppImage metadata points outside the package: $metadata"; exit 1 ;;
+                esac
+              done
+              if [ ! -x "$appdir/AppRun" ]; then
+                echo "::error::AppImage is missing an executable AppRun"
+                exit 1
+              fi
+            )
+            rm -rf "$extraction_dir/squashfs-root"
+          done
+
+      - name: Notarize and verify macOS disk images
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          folder="target/${{ matrix.target }}/release/bundle/dmg"
+          python3 scripts/notarize_macos_dmgs.py --directory "$folder" --report-dir "$RUNNER_TEMP/amberize-qa"
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true || { echo "::error::Refusing to replace assets on a published release"; exit 1; }
+          for dmg in "$folder/"*.dmg; do
+            gh release upload "$GITHUB_REF_NAME" "$dmg" --clobber
+          done
+
+      - name: Verify macOS signature and notarization
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="target/${{ matrix.target }}/release/bundle/macos/Amberize.app"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+
+      - name: Install release package and test native restart recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/amberize-qa"
+          host=$(rustc -vV | sed -n 's/^host: //p')
+          if [ "${{ runner.os }}" = macOS ] && [ "$host" != "${{ matrix.target }}" ]; then
+            echo "Cross-compiled macOS package: signature checked; native execution requires matching hardware."
+            exit 0
+          fi
+          cargo run -p email_archiver_storage --release --target "${{ matrix.target }}" --example qa_fixture --locked -- create "$RUNNER_TEMP/amberize-qa/archive.sqlite3" 1024 > "$RUNNER_TEMP/amberize-qa/before.json"
+          if [ "${{ runner.os }}" = Linux ]; then
+            sudo apt-get install -y xvfb
+            sudo dpkg -i target/${{ matrix.target }}/release/bundle/deb/*.deb
+            binary=$(command -v Amberize || command -v amberize)
+            dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+            appimage=$(find "target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -print -quit)
+            mkdir "$RUNNER_TEMP/amberize-appimage"
+            (cd "$RUNNER_TEMP/amberize-appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract > /dev/null)
+            dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
+          elif [ "${{ runner.os }}" = Windows ]; then
+            powershell -NoProfile -File scripts/install_windows_qa.ps1
+          else
+            python3 scripts/native_release_smoke.py --binary "$PWD/target/${{ matrix.target }}/release/bundle/macos/Amberize.app/Contents/MacOS/Amberize" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$HOME/Library/Application Support/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+          fi
+          cargo run -p email_archiver_storage --release --target "${{ matrix.target }}" --example qa_fixture --locked -- verify "$RUNNER_TEMP/amberize-qa/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/after.json"
+          python3 -c 'import json,os,pathlib; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"amberize-qa"; a=json.loads((p/"before.json").read_text()); b=json.loads((p/"after.json").read_text()); assert a["mime_hashes"] == b["mime_hashes"]; assert a["proof"]["message_blobs_count"] == b["proof"]["message_blobs_count"]; print("All synthetic MIME hashes and message counts preserved")'
+
+      - name: Upload native release evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: native-qa-${{ matrix.target }}
+          path: ${{ runner.temp }}/amberize-qa/
+          if-no-files-found: warn

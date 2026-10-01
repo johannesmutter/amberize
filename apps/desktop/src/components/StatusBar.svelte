@@ -8,6 +8,7 @@
   const BYTES_PER_GB = 1024 * 1024 * 1024;
 
   let {
+    outcome = 'never',
     syncing = false,
     syncing_account = null,
     last_sync = null,
@@ -71,7 +72,7 @@
     return n.toLocaleString();
   }
 
-  let idle_text = $derived(`Synced ${format_relative_time(last_sync)}`);
+  let idle_text = $derived(outcome === 'ok' ? `Synced ${format_relative_time(last_sync)}` : outcome === 'partial' ? `Partial sync ${format_relative_time(last_sync)}` : outcome === 'error' ? `Sync failed ${format_relative_time(last_sync)}` : 'Not synced yet');
 
   /** @type {string} */
   let progress_text = $derived.by(() => {
@@ -142,7 +143,7 @@
 <div class="status-bar">
   <div class="status-content">
     {#if error}
-      <button type="button" class="error-message" onclick={handle_error_click}>
+      <button type="button" class="error-message" title={error} onclick={handle_error_click}>
         <span class="error-icon">⚠</span>
         <span class="error-text">{error}</span>
         {#if error_account_id != null}
@@ -165,7 +166,7 @@
       </div>
     {:else}
       <span class="status-text">
-        <span class="sync-icon">✓</span>
+        <span class="sync-icon">{outcome === 'ok' ? '✓' : outcome === 'never' ? '–' : '⚠'}</span>
         {idle_text}
       </span>
     {/if}
@@ -280,6 +281,8 @@
 
   /* Error */
   .error-message {
+    max-width: 100%;
+    min-width: 0;
     display: flex;
     align-items: center;
     gap: var(--space-sm);
@@ -305,10 +308,15 @@
 
   .error-text {
     color: var(--color-error);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .error-action {
     color: var(--color-text-secondary);
+    flex-shrink: 0;
   }
 
   /* Stats toggle (centered) */

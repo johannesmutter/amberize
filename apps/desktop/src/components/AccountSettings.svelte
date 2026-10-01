@@ -169,7 +169,7 @@
       </p>
     {:else}
       <p class="hint">
-      If sync shows “missing secret…”, re-enter your password here. It is stored in your system's
+      If sync reports that the saved password is unavailable, re-enter it here. It is stored in your system's
       credential store (not in the database).
     </p>
 

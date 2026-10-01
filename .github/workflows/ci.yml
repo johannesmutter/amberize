@@ -1,13 +1,15 @@
 name: CI
 
 on:
+  workflow_call:
   push:
+    branches: ["**"]
   pull_request:
     branches: [main]
 
 # Cancel in-progress runs for the same branch/PR.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -59,15 +61,19 @@ jobs:
         if: runner.os == 'macOS'
         run: cargo fmt --all -- --check
 
+      - name: Install cargo-audit
+        if: matrix.coverage
+        run: cargo install cargo-audit --locked
+
       - name: Dependency audit (cargo audit)
         if: matrix.coverage
-        run: cargo audit || true
+        run: cargo audit
 
       - name: Rust lint (clippy)
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 
       - name: Rust tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Rust coverage report (informational)
         if: matrix.coverage
@@ -101,8 +107,18 @@ jobs:
       - name: UI tests + coverage
         run: npm test -- --coverage
 
+      - name: Frontend dependency audit
+        run: npm audit --audit-level=high
+
       - name: UI build
         run: npm run build
+
+      - name: Validate landing site
+        working-directory: apps/landing
+        run: |
+          npm ci
+          npm audit --audit-level=high
+          npm run build
 
       - name: Upload UI coverage (lcov)
         if: always()
@@ -110,3 +126,9 @@ jobs:
         with:
           name: ui-coverage-lcov
           path: apps/desktop/coverage/lcov.info
+
+  scripts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - run: python3 -m unittest discover -s scripts -p 'test_*.py'

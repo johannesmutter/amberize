@@ -3,6 +3,7 @@
 //! IMAP, Keychain, filesystem exports, clocks, and OAuth live here behind traits.
 
 pub mod imap;
+mod literal_guard;
 pub mod oauth;
 mod secrets;
 mod sync;

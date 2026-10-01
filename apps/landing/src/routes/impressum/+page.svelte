@@ -1,7 +1,3 @@
-<script>
-  import { app } from '$lib/app.svelte.js';
-</script>
-
 <svelte:head>
   <title>Impressum — Amberize</title>
 </svelte:head>
@@ -12,49 +8,39 @@
   <h2>Angaben gemäß § 5 DDG</h2>
   <p>
     Johannes Mutter<br />
-    <!-- TODO: Adresse eintragen -->
-    [Straße und Hausnummer]<br />
-    [PLZ Ort]<br />
+    Lange Str. 106<br />
+    78256 Steißlingen<br />
     Deutschland
   </p>
 
   <h2>Kontakt</h2>
   <p>
-    <!-- TODO: E-Mail / Telefon eintragen -->
-    E-Mail: [TODO: E-Mail-Adresse]
+    E-Mail: <a href="mailto:m@mutter.co">m@mutter.co</a><br />
+    Telefon: <a href="tel:+4915229206090">+49 (0) 152 292 060 90</a>
   </p>
 
   <h2>Umsatzsteuer-ID</h2>
   <p>
-    <!-- TODO: Falls vorhanden -->
     Umsatzsteuer-Identifikationsnummer gemäß § 27a Umsatzsteuergesetz:<br />
-    [TODO: USt-IdNr. oder „Nicht vorhanden" eintragen]
+    DE292529693
   </p>
 
   <h2>Verantwortlich für den Inhalt nach § 18 Abs. 2 MStV</h2>
   <p>
     Johannes Mutter<br />
-    [Straße und Hausnummer]<br />
-    [PLZ Ort]
+    Lange Str. 106<br />
+    78256 Steißlingen
   </p>
 
   <h2>Haftung für Inhalte</h2>
   <p>
     Die Inhalte dieser Seiten wurden mit größter Sorgfalt erstellt.
-    Für die Richtigkeit, Vollständigkeit und Aktualität der Inhalte kann jedoch keine Gewähr übernommen werden.
-    Als Diensteanbieter bin ich gemäß § 7 Abs. 1 DDG für eigene Inhalte auf diesen Seiten nach den
-    allgemeinen Gesetzen verantwortlich. Nach §§ 8 bis 10 DDG bin ich als Diensteanbieter jedoch nicht
-    verpflichtet, übermittelte oder gespeicherte fremde Informationen zu überwachen oder nach Umständen
-    zu forschen, die auf eine rechtswidrige Tätigkeit hinweisen.
+    Die Informationen beschreiben Amberize und seine Funktionen. Sie ersetzen keine individuelle Rechts- oder Steuerberatung. Hinweise auf Fehler oder Rechtsverstöße können Sie an die oben genannte Kontaktadresse senden.
   </p>
 
   <h2>Haftung für Links</h2>
   <p>
-    Diese Website enthält Links zu externen Websites Dritter, auf deren Inhalte ich keinen Einfluss habe.
-    Deshalb kann ich für diese fremden Inhalte auch keine Gewähr übernehmen. Für die Inhalte der
-    verlinkten Seiten ist stets der jeweilige Anbieter oder Betreiber der Seiten verantwortlich.
-    Die verlinkten Seiten wurden zum Zeitpunkt der Verlinkung auf mögliche Rechtsverstöße überprüft.
-    Rechtswidrige Inhalte waren zum Zeitpunkt der Verlinkung nicht erkennbar.
+    Diese Website enthält Links zu externen Websites Dritter. Für deren Inhalte ist der jeweilige Anbieter oder Betreiber verantwortlich. Hinweise auf fehlerhafte oder rechtswidrige verlinkte Inhalte können Sie an die oben genannte Kontaktadresse senden.
   </p>
 
   <h2>Urheberrecht</h2>

@@ -66,16 +66,12 @@
     });
   }
 
-  /** Pattern matching external URLs in src attributes (http:// or https://). */
-  const EXTERNAL_IMAGE_PATTERN = /(?:src|background)\s*=\s*["']https?:\/\//i;
-
-  /**
-   * Check whether the email HTML references any external (remote) images.
-   * @param {string} html
-   * @returns {boolean}
-   */
   function has_external_images(html) {
-    return EXTERNAL_IMAGE_PATTERN.test(html);
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    return [...parsed.querySelectorAll('[src], [srcset], [background]')].some(node => ['src','srcset','background'].some(attr => {
+      const value = node.getAttribute(attr) ?? '';
+      return /(?:https?:)?\/\//i.test(value);
+    }));
   }
 
   /**
@@ -102,7 +98,14 @@
    * @returns {string}
    */
   function build_iframe_srcdoc(body_html, block_remote) {
-    const sanitized = sanitize_html(body_html);
+    const parsed = new DOMParser().parseFromString(sanitize_html(body_html), 'text/html');
+    for (const node of parsed.querySelectorAll('[src], [srcset], [background]')) {
+      for (const attribute of ['src', 'srcset', 'background']) {
+        const value = node.getAttribute(attribute);
+        if (value) node.setAttribute(attribute, value.replace(/(^|[\s,])\/\//g, '$1https://'));
+      }
+    }
+    const sanitized = parsed.body.innerHTML;
     const img_policy = block_remote ? 'img-src data:;' : 'img-src data: https: http:;';
     const csp_tag = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; ${img_policy} style-src 'unsafe-inline'; font-src data:; base-uri 'none'; form-action 'none';">`;
     return `<!DOCTYPE html>
@@ -163,7 +166,7 @@ ${csp_tag}
     allow_external_images = false;
   });
 
-  let block_remote = $derived(contains_external_images && !allow_external_images);
+  let block_remote = $derived(!allow_external_images);
   let srcdoc = $derived(render_html ? build_iframe_srcdoc(message.body_html, block_remote) : '');
 
   /** @type {HTMLIFrameElement | undefined} */
@@ -188,6 +191,7 @@ ${csp_tag}
     let observer = null;
 
     function on_load() {
+      observer?.disconnect();
       resize_iframe();
       // Watch for late content changes (image loads, font swaps, etc.)
       if (iframe_el?.contentDocument?.body) {
@@ -228,7 +232,7 @@ ${csp_tag}
   /** Inline images with data URIs that aren't CID-referenced in the HTML body. */
   let standalone_images = $derived(
     (message?.attachments ?? []).filter(a => {
-      if (!a.data_uri) return false;
+      if (!a.data_uri || a.embedded_in_body) return false;
       // Reject data URIs that exceed the size limit to prevent memory issues.
       if (get_data_uri_decoded_size(a.data_uri) > MAX_DATA_URI_RENDER_SIZE) return false;
       // If CID is referenced in HTML, it's already embedded — skip.
@@ -239,7 +243,7 @@ ${csp_tag}
 
   /** Non-image attachments (or images too large for data URIs). */
   let file_attachments = $derived(
-    (message?.attachments ?? []).filter(a => !a.data_uri)
+    (message?.attachments ?? []).filter(a => !a.data_uri && !a.embedded_in_body)
   );
 </script>
 

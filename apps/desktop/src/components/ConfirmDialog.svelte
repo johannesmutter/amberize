@@ -5,6 +5,9 @@
 
   let { title, message, confirm_text, on_confirm, on_cancel } = $props();
 
+  let dialog_element = $state(null);
+  let input_element = $state(null);
+  $effect(() => {const previous = document.activeElement; input_element?.focus(); return () => previous?.focus?.();});
   let input_value = $state('');
 
   let can_confirm = $derived(input_value === confirm_text);
@@ -23,6 +26,7 @@
   }
 
   function handle_keydown(event) {
+    if (event.key === 'Tab' && dialog_element) {const controls=[...dialog_element.querySelectorAll('button:not(:disabled),input')]; const first=controls[0],last=controls.at(-1); if(event.shiftKey && document.activeElement === first){event.preventDefault();last?.focus();} else if(!event.shiftKey && document.activeElement === last){event.preventDefault();first?.focus();}}
     if (event.key === 'Escape') {
       on_cancel?.();
     }
@@ -32,7 +36,7 @@
 <svelte:window onkeydown={handle_keydown} />
 
 <div class="dialog-backdrop" onclick={handle_backdrop_click} role="presentation">
-  <div class="dialog" role="alertdialog" aria-labelledby="dialog-title" aria-describedby="dialog-message">
+  <div class="dialog" bind:this={dialog_element} aria-modal="true" role="alertdialog" aria-labelledby="dialog-title" aria-describedby="dialog-message">
     <h2 id="dialog-title" class="dialog-title">{title}</h2>
     <p id="dialog-message" class="dialog-message">{message}</p>
 
@@ -43,7 +47,8 @@
         bind:value={input_value}
         placeholder="Type to confirm..."
         autocomplete="off"
-        autofocus
+        aria-label="Confirmation text"
+        bind:this={input_element}
       />
       <p class="dialog-hint">Type: <code>{confirm_text}</code></p>
 

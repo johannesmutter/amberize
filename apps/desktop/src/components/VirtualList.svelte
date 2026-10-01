@@ -13,7 +13,7 @@
     on_select,
     on_toggle_selection,
     on_click,
-    on_reach_end,
+    on_reach_end, on_reach_start, origin = 0,
   } = $props();
 
   const ROW_HEIGHT = 80;
@@ -22,6 +22,12 @@
   let container_element = $state(null);
   let scroll_top = $state(0);
   let container_height = $state(400);
+  let previous_origin = 0;
+  $effect(() => {
+    const next = origin;
+    if (container_element) { container_element.scrollTop = Math.max(0, container_element.scrollTop - (next - previous_origin) * ROW_HEIGHT); scroll_top = container_element.scrollTop; }
+    previous_origin = next;
+  });
 
   $effect(() => {
     if (!container_element) return;
@@ -63,6 +69,7 @@
   function handle_scroll(event) {
     scroll_top = event.target.scrollTop;
 
+    if (scroll_top <= ROW_HEIGHT * BUFFER_COUNT) on_reach_start?.();
     if (!on_reach_end) return;
     const remaining_px = event.target.scrollHeight - (event.target.scrollTop + event.target.clientHeight);
     const threshold_px = ROW_HEIGHT * BUFFER_COUNT * 2;
@@ -156,14 +163,11 @@
         class:selected={selected_item_id === item.id}
         class:checked={selected_ids.has(item.id)}
         style="top: {top}px;"
-        onclick={() => handle_row_click(item)}
-        role="button"
-        tabindex="0"
-        onkeydown={(e) => e.key === 'Enter' && handle_row_click(item)}
       >
         {#if bulk_mode}
           <div class="checkbox-col">
             <input
+              aria-label={`Select ${item.subject || 'email'} for export`}
               type="checkbox"
               checked={selected_ids.has(item.id)}
               onchange={(e) => handle_checkbox_change(e, item)}
@@ -171,18 +175,23 @@
             />
           </div>
         {/if}
-        <div class="content">
-          <div class="row-1">
+        <button
+          type="button"
+          class="content"
+          onclick={() => handle_row_click(item)}
+          onkeydown={(e) => {if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();handle_row_click(item);}}}
+        >
+          <span class="row-1">
             <span class="participants">{format_participants(item)}</span>
             <span class="location">{format_location(item)}</span>
-          </div>
-          <div class="row-2">
+          </span>
+          <span class="row-2">
             <span class="subject">{item.subject || '(no subject)'}</span>
-          </div>
-          <div class="row-3">
+          </span>
+          <span class="row-3">
             <span class="snippet">{item.snippet || ''}</span>
-          </div>
-        </div>
+          </span>
+        </button>
       </div>
     {/each}
   </div>
@@ -243,7 +252,20 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
+    align-items: stretch;
     gap: 2px;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .content:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 
   .row-1 {

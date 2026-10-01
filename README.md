@@ -1,6 +1,6 @@
 # Amberize — Your emails, safely archived for the next tax audit
 
-Amberize saves your business emails to your computer — searchable, tamper-proof, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.
+Amberize saves your business emails to your computer — searchable, tamper-evident, and ready when the Finanzamt asks. No cloud. No subscription. No IT department needed.
 
 **Website**: [amberize.fly.dev](https://amberize.fly.dev/)
 
@@ -43,7 +43,7 @@ Download the latest release from the [Releases](https://github.com/johannesmutte
 
 Click **Add Account → Google / Gmail**, enter your Gmail address, and sign in via the browser. Amberize handles the OAuth flow automatically.
 
-On first use, you'll need to enter a Google OAuth Client ID and Secret. You can create one for free at the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (type: Desktop app, enable the Gmail API). These credentials are stored in your system's credential store, not in the archive.
+On first use, you'll need to enter a Google OAuth Client ID and Secret. You can create one for free at the [Google Cloud Console](https://console.cloud.google.com/apis/credentials) (type: Desktop app, enable the Gmail API). These credentials are stored in your system's credential store, not in the archive. A personal or test OAuth project can show Google’s unverified-app warning. If its audience is External and publishing status is Testing, Gmail authorization expires after seven days and you must sign in again. [Google explains testing limits and verification](https://developers.google.com/identity/protocols/oauth2/production-readiness/restricted-scope-verification) and [refresh-token expiry](https://developers.google.com/identity/protocols/oauth2#expiration).
 
 > Passwords and OAuth tokens never touch the archive database — they live exclusively in your OS credential store (macOS Keychain, Windows Credential Manager, or Linux Secret Service).
 
@@ -57,7 +57,7 @@ Amberize **supports** GoBD-compliant email archiving — it is **not** GoBD-comp
 
 | GoBD requirement | How Amberize addresses it |
 |---|---|
-| **Immutability** (Unveränderbarkeit) | Raw MIME bytes stored once, never modified. SHA-256 hashes verify integrity. Any tampering is detected. |
+| **Immutability** (Unveränderbarkeit) | Raw MIME bytes stored once, never modified. SHA-256 hashes verify integrity. Checks detect changes relative to stored hashes and checkpoints. A coordinated rewrite requires an external trusted snapshot to detect. |
 | **Completeness** (Vollständigkeit) | All messages in selected IMAP folders are archived automatically every few minutes. |
 | **Traceability** (Nachvollziehbarkeit) | Hash-chained audit trail records every sync, export, and configuration change. |
 | **Machine readability** (Maschinelle Auswertbarkeit) | Full-text search (FTS5). Export to `.eml` or auditor ZIP. |
@@ -76,7 +76,7 @@ Amberize **supports** GoBD-compliant email archiving — it is **not** GoBD-comp
 
 For sole proprietors (Einzelunternehmer), freelancers (Freiberufler), and small businesses using Amberize:
 
-1. Keep the default sync interval (15 min) or shorter
+1. Keep the default sync interval (5 min) or shorter
 2. Don't delete emails from your server before verifying they're in the archive
 3. Back up the archive file regularly (external drive, safe, or Steuerberater)
 4. Keep a copy of the auto-generated Verfahrensdokumentation alongside the archive
@@ -156,6 +156,12 @@ To set up for development:
 2. Copy `.cargo/config.toml.example` to `.cargo/config.toml` and fill in your values.
 
 `.cargo/config.toml` is gitignored — credentials are never committed.
+
+For general-public sign-in through a shared OAuth project, prepare Google brand/scope verification and production publishing settings; embedding a Desktop client does not verify the project. The current Gmail IMAP flow requires the restricted full-mail scope. [Google advises using the Gmail API with narrower scopes when full-mail access is unnecessary](https://developers.google.com/workspace/gmail/imap/xoauth2-protocol). A read-only API integration would still require restricted-scope verification unless an exemption applies.
+
+Google’s displayed application identity comes from the OAuth project’s branding, independently of Amberize’s installed name. In the project owning the Desktop client, check **Google Auth Platform → Branding → App name** and use **Amberize**. Also compare draft and published branding: saved changes may need verification and publication before users see them. [Google documents OAuth branding and its publication process](https://support.google.com/cloud/answer/15549049).
+
+The final browser redirect uses `http://127.0.0.1:<port>`, a temporary callback on your own computer protected by PKCE and OAuth state validation. Google sign-in and token exchange use HTTPS. [Google supports this desktop loopback flow](https://developers.google.com/identity/protocols/oauth2/native-app); an actual certificate error on a Google address is a separate issue.
 
 > **Why is the client secret not really secret?** Google [documents](https://developers.google.com/identity/protocols/oauth2) that native/desktop apps "cannot keep secrets" — the client secret for a Desktop-type OAuth client is not expected to remain confidential. Security relies on PKCE + user consent, not the client secret. This is the same approach used by Thunderbird, which [ships its Google OAuth credentials in public source code](https://searchfox.org/comm-central/source/mailnews/base/src/OAuth2Providers.sys.mjs).
 
@@ -280,4 +286,4 @@ All GitHub Actions are pinned to commit SHAs for supply chain security.
 
 ## License
 
-MIT
+[MIT](LICENSE)

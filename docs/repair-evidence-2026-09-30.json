@@ -1,0 +1,287 @@
+{
+  "date": "2026-09-30",
+  "base_commit": "ee9bccae5d464e3a1a4e6ec1b89d0716e300cb79",
+  "native_macos_debug": {
+    "error": null,
+    "interval": 3600,
+    "stages": [
+      "backend restored archive without a webview",
+      "first webview ready",
+      "closed webview released; backend still running",
+      "recreated webview ready"
+    ]
+  },
+  "rust_tests": {
+    "desktop": 21,
+    "adapters": 19,
+    "storage": 58,
+    "total": 98
+  },
+  "desktop_tests": 43,
+  "python_tests": 4,
+  "rustsec": {
+    "vulnerabilities": 0,
+    "warnings": [
+      {
+        "category": "unmaintained",
+        "package": "async-std",
+        "version": "1.13.2",
+        "advisory": "RUSTSEC-2025-0052"
+      },
+      {
+        "category": "unmaintained",
+        "package": "proc-macro-error",
+        "version": "1.0.4",
+        "advisory": "RUSTSEC-2024-0370"
+      },
+      {
+        "category": "unsound",
+        "package": "glib",
+        "version": "0.18.5",
+        "advisory": "RUSTSEC-2024-0429"
+      }
+    ],
+    "database_commit": "f23b768236fe2880e4cfa167da662cad8ca79240",
+    "dependency_count": 611,
+    "yanked_check": "Completed using a fresh temporary audit home populated with fetched public sparse-index metadata; no yanked warnings"
+  },
+  "query_benchmark": {
+    "sqlite": "3.53.4",
+    "repeats": 5,
+    "results": [
+      {
+        "locations": 10000,
+        "queries": {
+          "old_first": {
+            "median_ms": 5.986,
+            "rows": 100,
+            "plan": [
+              "SCAN ml",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          },
+          "old_deep_offset": {
+            "median_ms": 8.357,
+            "rows": 100,
+            "plan": [
+              "SCAN ml",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          },
+          "new_first": {
+            "median_ms": 0.166,
+            "rows": 100,
+            "plan": [
+              "SCAN ml USING INDEX idx_locations_sort",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_deep_cursor": {
+            "median_ms": 0.17,
+            "rows": 100,
+            "plan": [
+              "SEARCH ml USING INDEX idx_locations_sort (sort_timestamp<?)",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_account_date": {
+            "median_ms": 0.164,
+            "rows": 100,
+            "plan": [
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH ml USING INDEX idx_locations_account_sort (account_id=? AND sort_timestamp>? AND sort_timestamp<?)",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_attachments": {
+            "median_ms": 0.375,
+            "rows": 100,
+            "plan": [
+              "SCAN ml USING INDEX idx_locations_sort",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          }
+        }
+      },
+      {
+        "locations": 100000,
+        "queries": {
+          "old_first": {
+            "median_ms": 66.198,
+            "rows": 100,
+            "plan": [
+              "SCAN ml",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          },
+          "old_deep_offset": {
+            "median_ms": 120.06,
+            "rows": 100,
+            "plan": [
+              "SCAN ml",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          },
+          "new_first": {
+            "median_ms": 0.172,
+            "rows": 100,
+            "plan": [
+              "SCAN ml USING INDEX idx_locations_sort",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_deep_cursor": {
+            "median_ms": 0.17,
+            "rows": 100,
+            "plan": [
+              "SEARCH ml USING INDEX idx_locations_sort (sort_timestamp<?)",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_account_date": {
+            "median_ms": 0.167,
+            "rows": 100,
+            "plan": [
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH ml USING INDEX idx_locations_account_sort (account_id=? AND sort_timestamp>? AND sort_timestamp<?)",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_attachments": {
+            "median_ms": 0.447,
+            "rows": 100,
+            "plan": [
+              "SCAN ml USING INDEX idx_locations_sort",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          }
+        }
+      },
+      {
+        "locations": 1000000,
+        "queries": {
+          "old_first": {
+            "median_ms": 732.353,
+            "rows": 100,
+            "plan": [
+              "SCAN ml",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          },
+          "old_deep_offset": {
+            "median_ms": 1203.993,
+            "rows": 100,
+            "plan": [
+              "SCAN ml",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "USE TEMP B-TREE FOR ORDER BY"
+            ]
+          },
+          "new_first": {
+            "median_ms": 0.166,
+            "rows": 100,
+            "plan": [
+              "SCAN ml USING INDEX idx_locations_sort",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_deep_cursor": {
+            "median_ms": 0.167,
+            "rows": 100,
+            "plan": [
+              "SEARCH ml USING INDEX idx_locations_sort (sort_timestamp<?)",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_account_date": {
+            "median_ms": 0.164,
+            "rows": 100,
+            "plan": [
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH ml USING INDEX idx_locations_account_sort (account_id=? AND sort_timestamp>? AND sort_timestamp<?)",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          },
+          "new_attachments": {
+            "median_ms": 0.464,
+            "rows": 100,
+            "plan": [
+              "SCAN ml USING INDEX idx_locations_sort",
+              "SEARCH mb USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH m USING INTEGER PRIMARY KEY (rowid=?)",
+              "SEARCH a USING INTEGER PRIMARY KEY (rowid=?)"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "limits": [
+    "Synthetic archives only; no live archive or credential changes",
+    "Autostart disabled in isolated native probe; no reboot/login test",
+    "No Windows/Linux native execution or real provider authorization",
+    "No native process-tree RSS/energy measurement"
+  ],
+  "desktop_coverage": {
+    "statements": 51.95,
+    "lines": 54.44,
+    "functions": 51.48,
+    "branches": 40.09
+  },
+  "root_reuse": {
+    "scope": "root checkpoints and quick root checks only",
+    "validation": "local message_blobs update hook plus same-connection PRAGMA data_version, under IMMEDIATE transactions",
+    "regression": "five unchanged checkpoints and quick checks add no root scans; ingestion and external hash/raw mutations invalidate reuse; full content audits remain uncached",
+    "changed_blob_set": "O(N) scan with existing sorted SHA-256 proof format"
+  },
+  "export_cancellation": {
+    "phases": "backup steps, proof/event/content rows, metadata and MIME writes, final publication",
+    "publication": "cancel and atomic rename serialized; previous output retained on early cancellation; late cancellation reports Published",
+    "tests": "mid-write cancellation preserves previous output and removes temporary file; late cancellation reports saved output; early cancellation blocks late Start; registry stays bounded; UI awaits worker completion"
+  },
+  "desktop_bundle": {
+    "main_js_kb": 179.34,
+    "main_js_gzip_kb": 62.76,
+    "build": "Vite production assets"
+  },
+  "npm_audits": {
+    "desktop": 0,
+    "landing": 0
+  }
+}

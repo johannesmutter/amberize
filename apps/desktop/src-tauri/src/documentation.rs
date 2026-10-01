@@ -12,8 +12,6 @@ const AUTO_END_MARKER: &str = "<!-- END AUTO-GENERATED TECHNISCHE_SYSTEMDOKUMENT
 
 const TEMPLATE_DE: &str = include_str!("../assets/verfahrensdokumentation_template_de.md");
 
-const DEFAULT_SYNC_INTERVAL_MINUTES: u32 = 15;
-
 #[derive(Debug, Error)]
 pub enum DocumentationError {
     #[error("storage error: {0}")]
@@ -32,20 +30,28 @@ pub enum DocumentationError {
 pub type DocumentationResult<T> = Result<T, DocumentationError>;
 
 #[tauri::command]
-pub fn generate_documentation(db_path: String) -> Result<String, String> {
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let documentation_path =
-        ensure_verfahrensdokumentation(&storage, Path::new(&db_path)).map_err(|e| e.to_string())?;
-    Ok(documentation_path.to_string_lossy().to_string())
+pub async fn generate_documentation(db_path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let documentation_path = ensure_verfahrensdokumentation(&storage, Path::new(&db_path))
+            .map_err(|e| e.to_string())?;
+        Ok(documentation_path.to_string_lossy().to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
-pub fn open_documentation(db_path: String) -> Result<(), String> {
-    let storage = Storage::open_or_create(&db_path).map_err(|e| e.to_string())?;
-    let documentation_path =
-        ensure_verfahrensdokumentation(&storage, Path::new(&db_path)).map_err(|e| e.to_string())?;
-    open_in_default_app(&documentation_path).map_err(|e| e.to_string())?;
-    Ok(())
+pub async fn open_documentation(db_path: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let documentation_path = ensure_verfahrensdokumentation(&storage, Path::new(&db_path))
+            .map_err(|e| e.to_string())?;
+        open_in_default_app(&documentation_path).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 pub fn ensure_verfahrensdokumentation(
@@ -54,20 +60,14 @@ pub fn ensure_verfahrensdokumentation(
 ) -> DocumentationResult<PathBuf> {
     let documentation_path = documentation_path_for_archive(archive_path)?;
 
-    let base_text = if documentation_path.exists() {
-        std::fs::read_to_string(&documentation_path)?
-    } else {
-        TEMPLATE_DE.to_string()
-    };
+    let updated_text = render_snapshot_documentation(storage, archive_path)?;
 
-    if !base_text.contains(AUTO_BEGIN_MARKER) || !base_text.contains(AUTO_END_MARKER) {
-        return Err(DocumentationError::TemplateMissingMarkers);
-    }
-
-    let auto_block = render_auto_technical_section(storage, archive_path)?;
-    let updated_text = replace_between_markers(&base_text, &auto_block)?;
-
-    std::fs::write(&documentation_path, updated_text)?;
+    crate::output::atomic_export(archive_path, &documentation_path, |file| {
+        use std::io::Write;
+        file.write_all(updated_text.as_bytes())
+            .map_err(|e| e.to_string())
+    })
+    .map_err(std::io::Error::other)?;
 
     // Audit-relevant: documentation generation/refresh.
     let _ = storage.append_event(&email_archiver_storage::InsertEventInput {
@@ -89,16 +89,24 @@ fn documentation_path_for_archive(archive_path: &Path) -> DocumentationResult<Pa
             "archive path has no parent",
         )
     })?;
-    Ok(parent.join(VERFAHRENSDOKUMENTATION_FILENAME))
+    let name = archive_path
+        .file_name()
+        .ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "Archive filename missing")
+        })?
+        .to_string_lossy();
+    Ok(parent.join(format!("{name}.{VERFAHRENSDOKUMENTATION_FILENAME}")))
 }
 
 fn render_auto_technical_section(
     storage: &Storage,
     archive_path: &Path,
+    check: &impl Fn() -> email_archiver_storage::StorageResult<()>,
 ) -> DocumentationResult<String> {
+    check()?;
     let schema_version = storage.schema_version()?;
-    let proof_snapshot = storage.create_proof_snapshot()?;
-    let event_chain = storage.verify_event_chain()?;
+    let proof_snapshot = storage.create_proof_snapshot_checked(check)?;
+    let event_chain = storage.verify_event_chain_checked(check)?;
 
     let accounts = storage.list_accounts()?;
 
@@ -123,11 +131,11 @@ fn render_auto_technical_section(
 
     lines.push("**Synchronisation (IMAP)**".to_string());
     lines.push(format!(
-        "- Standard-Intervall: {} Minuten",
-        DEFAULT_SYNC_INTERVAL_MINUTES
+        "- Konfiguriertes Intervall: {} Minuten",
+        storage.sync_interval_secs()? / 60
     ));
     lines.push("- IMAP Flags werden nicht verändert (BODY.PEEK[]).".to_string());
-    lines.push("- Spam/Junk/Trash/Drafts sind standardmäßig ausgeschlossen.".to_string());
+    lines.push("- Im Automatikmodus werden alle auswählbaren Ordner archiviert. Im manuellen Modus gilt die gespeicherte Ordnerauswahl.".to_string());
     lines.push(String::new());
 
     lines.push("**Konfiguration (ohne Geheimnisse)**".to_string());
@@ -142,7 +150,13 @@ fn render_auto_technical_section(
                 account.email_address,
                 account.imap_host,
                 account.imap_port,
-                if account.imap_tls { "ja" } else { "nein" }
+                if account.disabled {
+                    "Archiv bleibt sichtbar; Synchronisation deaktiviert"
+                } else if account.imap_tls {
+                    "ja"
+                } else {
+                    "nein"
+                }
             ));
 
             let mailboxes = storage.list_mailboxes(account.id)?;
@@ -186,6 +200,7 @@ fn render_auto_technical_section(
             .to_string(),
     );
     lines.push("- Event-Log ist hash-verkettet (prev_hash → hash).".to_string());
+    lines.push("- Inhaltsprüfungen erkennen Abweichungen von gespeicherten Hashes. Ohne extern gesicherten Prüfsnapshot kann eine koordinierte Neuschreibung des gesamten Archivs nicht bewiesen werden.".to_string());
     lines.push(format!(
         "- Event-Chain-Check: geprüft={}, erster Fehler={}",
         event_chain.checked_events,
@@ -291,6 +306,42 @@ fn now_rfc3339() -> String {
     let now = time::OffsetDateTime::now_utc();
     now.format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
+}
+
+pub fn render_snapshot_documentation(
+    storage: &Storage,
+    archive_path: &Path,
+) -> DocumentationResult<String> {
+    render_snapshot_documentation_checked(storage, archive_path, || Ok(()))
+}
+
+pub fn render_snapshot_documentation_checked(
+    storage: &Storage,
+    archive_path: &Path,
+    check: impl Fn() -> email_archiver_storage::StorageResult<()>,
+) -> DocumentationResult<String> {
+    check()?;
+    let path = documentation_path_for_archive(archive_path)?;
+    let legacy = archive_path
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(VERFAHRENSDOKUMENTATION_FILENAME);
+    let base = if path.exists() {
+        std::fs::read_to_string(path)?
+    } else if legacy.exists() {
+        let text = std::fs::read_to_string(legacy)?;
+        if text.contains(&format!("`{}`", archive_path.display())) {
+            text
+        } else {
+            TEMPLATE_DE.into()
+        }
+    } else {
+        TEMPLATE_DE.into()
+    };
+    replace_between_markers(
+        &base,
+        &render_auto_technical_section(storage, archive_path, &check)?,
+    )
 }
 
 #[cfg(test)]

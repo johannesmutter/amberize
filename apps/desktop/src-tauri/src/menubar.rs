@@ -9,7 +9,7 @@ use tauri::ActivationPolicy;
 
 use crate::app_state::AppState;
 
-use tauri_plugin_autostart::{MacosLauncher, ManagerExt as AutostartManagerExt};
+use tauri_plugin_autostart::{AutoLaunchManager, MacosLauncher};
 
 type TrayMenu = tauri::menu::Menu<Wry>;
 type TrayCheckMenuItem = tauri::menu::CheckMenuItem<Wry>;
@@ -26,7 +26,6 @@ const APP_MENU_ID_SETTINGS: &str = "settings";
 const APP_MENU_ID_CHECK_UPDATES: &str = "check_updates";
 const APP_MENU_ID_EXPORT_EML: &str = "export_eml";
 
-const EVENT_TRAY_SYNC_NOW: &str = "tray_sync_now";
 const EVENT_TRAY_EXPORT_AUDITOR: &str = "tray_export_auditor";
 const EVENT_TRAY_DOCUMENTATION: &str = "tray_documentation";
 const EVENT_MENU_OPEN_SETTINGS: &str = "menu_open_settings";
@@ -62,7 +61,11 @@ pub fn setup_menubar(app: &mut App) -> tauri::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn setup_activation_policy(app: &mut App) {
-    app.set_activation_policy(ActivationPolicy::Regular);
+    app.set_activation_policy(if std::env::args().any(|a| a == "--background") {
+        ActivationPolicy::Accessory
+    } else {
+        ActivationPolicy::Regular
+    });
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -73,10 +76,28 @@ fn setup_activation_policy(_app: &mut App) {}
 /// an XDG autostart desktop entry. The `MacosLauncher` parameter is
 /// ignored on non-macOS platforms.
 fn setup_autostart_plugin(app: &mut App) {
-    let _ = app.handle().plugin(tauri_plugin_autostart::init(
+    #[cfg(debug_assertions)]
+    if std::env::var_os("AMBERIZE_TEST_CONFIG_DIR").is_some() {
+        return;
+    }
+    if let Err(error) = app.handle().plugin(tauri_plugin_autostart::init(
         MacosLauncher::LaunchAgent,
-        None,
-    ));
+        Some(vec!["--background"]),
+    )) {
+        if let Ok(mut warning) = app.state::<AppState>().startup_warning.lock() {
+            *warning = Some(format!("Launch at login is unavailable: {error}"));
+        }
+    }
+    // Refresh an existing opt-in entry after an app move/update.
+    if let Some(manager) = app.try_state::<AutoLaunchManager>() {
+        if manager.is_enabled().unwrap_or(false) {
+            if let Err(error) = manager.enable() {
+                if let Ok(mut warning) = app.state::<AppState>().startup_warning.lock() {
+                    *warning = Some(format!("Could not refresh launch at login: {error}"));
+                }
+            }
+        }
+    }
 }
 
 /// Build the native application menu.
@@ -164,12 +185,10 @@ fn setup_native_menu(app: &mut App) -> tauri::Result<()> {
         // Handle menu events
         app.on_menu_event(move |app_handle, event| match event.id.as_ref() {
             APP_MENU_ID_SETTINGS => {
-                show_main_window(app_handle);
-                let _ = app_handle.emit(EVENT_MENU_OPEN_SETTINGS, ());
+                deliver_action(app_handle, EVENT_MENU_OPEN_SETTINGS);
             }
             APP_MENU_ID_CHECK_UPDATES => {
-                show_main_window(app_handle);
-                let _ = app_handle.emit(EVENT_MENU_CHECK_UPDATES, ());
+                deliver_action(app_handle, EVENT_MENU_CHECK_UPDATES);
             }
             APP_MENU_ID_EXPORT_EML => {
                 let _ = app_handle.emit(EVENT_MENU_EXPORT_EML, ());
@@ -185,6 +204,7 @@ fn build_launch_at_login_item(app: &App) -> tauri::Result<TrayCheckMenuItem> {
     let autostart_enabled = is_autostart_enabled(app.handle());
 
     CheckMenuItemBuilder::with_id(TRAY_MENU_ID_LAUNCH_AT_LOGIN, "Launch at login")
+        .enabled(app.try_state::<AutoLaunchManager>().is_some())
         .checked(autostart_enabled)
         .build(app)
 }
@@ -250,16 +270,16 @@ fn handle_tray_menu_event(
     match menu_id {
         TRAY_MENU_ID_OPEN => show_main_window(app_handle),
         TRAY_MENU_ID_SYNC_NOW => {
-            let _ = app_handle.emit(EVENT_TRAY_SYNC_NOW, ());
-            show_main_window(app_handle);
+            let handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = crate::background_sync::run_sync_all_accounts_once(&handle).await;
+            });
         }
         TRAY_MENU_ID_EXPORT_AUDITOR => {
-            let _ = app_handle.emit(EVENT_TRAY_EXPORT_AUDITOR, ());
-            show_main_window(app_handle);
+            deliver_action(app_handle, EVENT_TRAY_EXPORT_AUDITOR);
         }
         TRAY_MENU_ID_DOCUMENTATION => {
-            let _ = app_handle.emit(EVENT_TRAY_DOCUMENTATION, ());
-            show_main_window(app_handle);
+            deliver_action(app_handle, EVENT_TRAY_DOCUMENTATION);
         }
         TRAY_MENU_ID_LAUNCH_AT_LOGIN => toggle_autostart(app_handle, launch_at_login_item),
         TRAY_MENU_ID_QUIT => app_handle.exit(0),
@@ -267,17 +287,36 @@ fn handle_tray_menu_event(
     }
 }
 
-fn show_main_window(app_handle: &AppHandle) {
-    let Some(window) = app_handle.get_webview_window("main") else {
-        return;
+pub fn show_main_window(app_handle: &AppHandle) {
+    let window = match app_handle.get_webview_window("main") {
+        Some(w) => w,
+        None => {
+            let Some(config) = app_handle.config().app.windows.first() else {
+                return;
+            };
+            match tauri::WebviewWindowBuilder::from_config(app_handle, config)
+                .and_then(|builder| builder.build())
+            {
+                Ok(w) => w,
+                Err(error) => {
+                    eprintln!("Could not open Amberize: {error}");
+                    return;
+                }
+            }
+        }
     };
 
     #[cfg(target_os = "macos")]
     let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
 
+    app_handle
+        .state::<AppState>()
+        .window_visible
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     let _ = window.unminimize();
     let _ = window.show();
     let _ = window.set_focus();
+    let _ = app_handle.emit("main_window_shown", ());
 }
 
 /// Handle main window close: hide instead of close, restore Accessory policy on macOS.
@@ -288,8 +327,30 @@ pub fn on_main_window_close(window: &tauri::Window<Wry>, event: &WindowEvent) {
 
     if let WindowEvent::CloseRequested { api, .. } = event {
         api.prevent_close();
+        window
+            .app_handle()
+            .state::<AppState>()
+            .window_visible
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         let _ = window.app_handle().emit("main_window_hidden", ());
         let _ = window.hide();
+        // Release the webview after a short grace period; synchronization is backend-owned.
+        let handle = window.app_handle().clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            let handle2 = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if let Some(window) = handle2.get_webview_window("main") {
+                    if window.is_visible().ok() == Some(false) {
+                        handle2
+                            .state::<AppState>()
+                            .frontend_ready
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
+                        let _ = window.destroy();
+                    }
+                }
+            });
+        });
 
         #[cfg(target_os = "macos")]
         let _ = window
@@ -307,12 +368,14 @@ fn toggle_autostart(app_handle: &AppHandle, launch_at_login_item: &TrayCheckMenu
 }
 
 fn is_autostart_enabled(app_handle: &AppHandle) -> bool {
-    let autostart_manager = app_handle.autolaunch();
+    let Some(autostart_manager) = app_handle.try_state::<AutoLaunchManager>() else {
+        return false;
+    };
     autostart_manager.is_enabled().unwrap_or(false)
 }
 
 fn toggle_autostart_enabled(app_handle: &AppHandle) -> Option<bool> {
-    let autostart_manager = app_handle.autolaunch();
+    let autostart_manager = app_handle.try_state::<AutoLaunchManager>()?;
     let currently_enabled = autostart_manager.is_enabled().ok()?;
 
     if currently_enabled {
@@ -322,4 +385,21 @@ fn toggle_autostart_enabled(app_handle: &AppHandle) -> Option<bool> {
 
     autostart_manager.enable().ok()?;
     Some(true)
+}
+
+fn deliver_action(app: &AppHandle, event: &str) {
+    let state = app.state::<AppState>();
+    let Ok(mut pending) = state.pending_actions.lock() else {
+        return;
+    };
+    if state
+        .frontend_ready
+        .load(std::sync::atomic::Ordering::SeqCst)
+    {
+        show_main_window(app);
+        let _ = app.emit(event, ());
+    } else {
+        pending.push(event.into());
+        show_main_window(app);
+    }
 }

@@ -109,6 +109,7 @@ impl std::fmt::Debug for OAuthTokenData {
 pub struct OAuthAuthorizeResult {
     pub email: String,
     pub access_token: String,
+    pub tokens: OAuthTokenData,
 }
 
 impl std::fmt::Debug for OAuthAuthorizeResult {
@@ -243,15 +244,16 @@ pub fn save_token_data(
 /// 2. Opens the user's default browser to Google's consent screen.
 /// 3. Waits for the redirect callback (up to [`CALLBACK_TIMEOUT_SECS`]).
 /// 4. Exchanges the authorization code for access + refresh tokens.
-/// 5. Stores the tokens in Keychain under `secret_ref`.
+/// 5. Returns staged tokens; the caller commits credentials together with account setup.
 ///
 /// Returns the access token (for immediate use with XOAUTH2) and the
 /// authenticated email address (for display).
 pub async fn google_authorize(
-    secret_store: &dyn SecretStore,
+    _secret_store: &dyn SecretStore,
     config: &GoogleOAuthClientConfig,
     login_hint: &str,
-    secret_ref: &str,
+    _secret_ref: &str,
+    on_browser: Option<&OAuthBrowserFn>,
 ) -> OAuthResult<OAuthAuthorizeResult> {
     let code_verifier = generate_pkce_verifier();
     let code_challenge = generate_pkce_challenge(&code_verifier);
@@ -267,7 +269,7 @@ pub async fn google_authorize(
         .port();
 
     let redirect_uri = format!("http://127.0.0.1:{port}");
-    let scopes = format!("{GOOGLE_IMAP_SCOPE} {GOOGLE_EMAIL_SCOPE}");
+    let scopes = format!("openid {GOOGLE_IMAP_SCOPE} {GOOGLE_EMAIL_SCOPE}");
 
     let auth_url = format!(
         "{GOOGLE_AUTH_ENDPOINT}\
@@ -290,7 +292,13 @@ pub async fn google_authorize(
     );
 
     // Open browser.
-    open_browser(&auth_url)?;
+    let browser_result = open_browser(&auth_url);
+    if let Some(report) = on_browser {
+        let error = browser_result.as_ref().err().map(ToString::to_string);
+        report(&auth_url, error.as_deref());
+    } else {
+        browser_result?;
+    }
 
     // Wait for the redirect callback.
     let auth_code = await_callback(listener, &state).await?;
@@ -298,14 +306,38 @@ pub async fn google_authorize(
     // Exchange the authorization code for tokens.
     let tokens = exchange_code(config, &auth_code, &redirect_uri, &code_verifier).await?;
 
-    // Persist tokens in Keychain.
-    save_token_data(secret_store, secret_ref, &tokens)?;
-
+    // Verify the provider identity; login_hint is only a suggestion to Google.
+    #[derive(Deserialize)]
+    struct Identity {
+        email: String,
+        email_verified: bool,
+    }
+    let identity: Identity = http_client()?
+        .get("https://openidconnect.googleapis.com/v1/userinfo")
+        .bearer_auth(&tokens.access_token)
+        .send()
+        .await
+        .map_err(|e| OAuthError::Network(e.to_string()))?
+        .error_for_status()
+        .map_err(|e| OAuthError::Network(e.to_string()))?
+        .json()
+        .await
+        .map_err(|e| OAuthError::Network(e.to_string()))?;
+    if !identity.email_verified || !identity.email.eq_ignore_ascii_case(login_hint) {
+        return Err(OAuthError::AuthorizationDenied(format!(
+            "Google authorized {}. Start again using that address.",
+            identity.email
+        )));
+    }
     Ok(OAuthAuthorizeResult {
-        email: login_hint.to_string(),
-        access_token: tokens.access_token,
+        email: identity.email,
+        access_token: tokens.access_token.clone(),
+        tokens,
     })
 }
+
+/// Receives the authorization URL so a UI can offer manual browser navigation.
+pub type OAuthBrowserFn = dyn Fn(&str, Option<&str>) + Send + Sync;
 
 // ---------------------------------------------------------------------------
 // Token refresh
@@ -357,7 +389,7 @@ async fn refresh_token(
         ("grant_type", "refresh_token"),
     ];
 
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let resp = client
         .post(GOOGLE_TOKEN_ENDPOINT)
         .form(&params)
@@ -445,7 +477,17 @@ fn urlencoded(s: &str) -> String {
 
 /// Open a URL in the user's default browser (macOS).
 fn open_browser(url: &str) -> OAuthResult<()> {
-    std::process::Command::new("open")
+    #[cfg(target_os = "macos")]
+    let mut command = std::process::Command::new("open");
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut c = std::process::Command::new("rundll32.exe");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    let mut command = std::process::Command::new("xdg-open");
+    command
         .arg(url)
         .spawn()
         .map_err(|e| OAuthError::Browser(e.to_string()))?;
@@ -457,63 +499,66 @@ fn open_browser(url: &str) -> OAuthResult<()> {
 /// Reads a single HTTP request, extracts `code` and `state` from the query
 /// string, validates state, then sends a human-friendly HTML response.
 async fn await_callback(listener: TcpListener, expected_state: &str) -> OAuthResult<String> {
-    let accept_future = listener.accept();
-
-    let (mut stream, _addr) =
-        tokio::time::timeout(Duration::from_secs(CALLBACK_TIMEOUT_SECS), accept_future)
-            .await
-            .map_err(|_| OAuthError::CallbackTimeout)?
-            .map_err(|e| OAuthError::CallbackServer(e.to_string()))?;
-
-    // Read the HTTP request (the redirect is a simple GET).
-    let mut buf = vec![0u8; 8192];
-    let n = stream
-        .read(&mut buf)
-        .await
-        .map_err(|e| OAuthError::CallbackServer(e.to_string()))?;
-    let request = String::from_utf8_lossy(&buf[..n]);
-
-    // Parse the request line: `GET /?code=XXX&state=YYY HTTP/1.1`
-    let path = request.split_whitespace().nth(1).unwrap_or("/");
-
-    let query_string = path.split_once('?').map(|(_, q)| q).unwrap_or("");
-    let params = parse_query_string(query_string);
-
-    // Check for errors from Google.
-    if let Some(error) = params.get("error") {
-        let safe_error = html_escape(error);
-        send_html_response(
-            &mut stream,
-            "Authorization failed",
-            &format!("Google returned an error: <strong>{safe_error}</strong>. Please close this window and try again."),
-        )
-        .await;
-        return Err(OAuthError::AuthorizationDenied(error.clone()));
-    }
-
-    // Validate CSRF state.
-    let received_state = params.get("state").ok_or(OAuthError::StateMismatch)?;
-    if received_state != expected_state {
-        send_html_response(
-            &mut stream,
-            "Authorization failed",
-            "Security check failed (state mismatch). Please close this window and try again.",
-        )
-        .await;
-        return Err(OAuthError::StateMismatch);
-    }
-
-    // Extract the authorization code.
-    let code = params.get("code").ok_or(OAuthError::MissingCode)?.clone();
-
-    send_html_response(
-        &mut stream,
-        "Authorization successful",
-        "You can close this window and return to <strong>Amberize</strong>.",
-    )
-    .await;
-
-    Ok(code)
+    tokio::time::timeout(Duration::from_secs(CALLBACK_TIMEOUT_SECS), async {
+        loop {
+            let (mut stream, _) = listener
+                .accept()
+                .await
+                .map_err(|e| OAuthError::CallbackServer(e.to_string()))?;
+            let request = tokio::time::timeout(Duration::from_secs(10), async {
+                let mut bytes = Vec::with_capacity(1024);
+                let mut buffer = [0; 512];
+                while bytes.len() < 8192 {
+                    let n = stream.read(&mut buffer).await?;
+                    if n == 0 {
+                        break;
+                    }
+                    bytes.extend_from_slice(&buffer[..n]);
+                    if bytes.windows(4).any(|v| v == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                Ok::<_, std::io::Error>(String::from_utf8_lossy(&bytes).into_owned())
+            })
+            .await;
+            let Ok(Ok(request)) = request else {
+                continue;
+            };
+            let mut line = request.lines().next().unwrap_or("").split_whitespace();
+            if line.next() != Some("GET") {
+                continue;
+            }
+            let path = line.next().unwrap_or("/");
+            let params = parse_query_string(path.split_once('?').map(|(_, q)| q).unwrap_or(""));
+            // Ignore favicon, stray connections and incorrect-state requests rather
+            // than letting one unrelated request consume the authorization attempt.
+            if params.get("state").map(String::as_str) != Some(expected_state) {
+                send_html_response(
+                    &mut stream,
+                    "Authorization pending",
+                    "Return to the Google authorization page or to Amberize.",
+                )
+                .await;
+                continue;
+            }
+            if let Some(error) = params.get("error") {
+                send_html_response(&mut stream, "Authorization failed", &html_escape(error)).await;
+                return Err(OAuthError::AuthorizationDenied(error.clone()));
+            }
+            let Some(code) = params.get("code") else {
+                continue;
+            };
+            send_html_response(
+                &mut stream,
+                "Authorization received",
+                "Return to Amberize to finish setup. You can close this window.",
+            )
+            .await;
+            return Ok(code.clone());
+        }
+    })
+    .await
+    .map_err(|_| OAuthError::CallbackTimeout)?
 }
 
 /// Send a minimal HTML page as an HTTP response on the callback connection.
@@ -533,7 +578,11 @@ async fn send_html_response(stream: &mut tokio::net::TcpStream, title: &str, bod
         html.len(),
         html
     );
-    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = tokio::time::timeout(
+        Duration::from_secs(5),
+        stream.write_all(response.as_bytes()),
+    )
+    .await;
     let _ = stream.flush().await;
 }
 
@@ -553,7 +602,7 @@ async fn exchange_code(
         ("code_verifier", code_verifier),
     ];
 
-    let client = reqwest::Client::new();
+    let client = http_client()?;
     let resp = client
         .post(GOOGLE_TOKEN_ENDPOINT)
         .form(&params)
@@ -677,10 +726,57 @@ impl std::fmt::Debug for TokenResponse {
 // Tests
 // ---------------------------------------------------------------------------
 
+fn http_client() -> OAuthResult<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .connect_timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| OAuthError::Network(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn callback_ignores_stray_requests_and_reads_fragmented_headers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let callback = tokio::spawn(async move { await_callback(listener, "valid-state").await });
+        let mut stray = tokio::net::TcpStream::connect(address).await.unwrap();
+        stray
+            .write_all(b"GET /favicon.ico HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = String::new();
+        stray.read_to_string(&mut response).await.unwrap();
+        assert!(response.contains("Authorization pending"));
+        let mut valid = tokio::net::TcpStream::connect(address).await.unwrap();
+        valid
+            .write_all(b"GET /?code=verified-code&state=valid-state HTTP/1.1\r\n")
+            .await
+            .unwrap();
+        tokio::task::yield_now().await;
+        valid.write_all(b"Host: localhost\r\n\r\n").await.unwrap();
+        let mut response = String::new();
+        valid.read_to_string(&mut response).await.unwrap();
+        assert!(response.contains("Authorization received"));
+        assert_eq!(callback.await.unwrap().unwrap(), "verified-code");
+    }
+    #[tokio::test]
+    async fn stalled_callback_socket_cannot_outlive_the_flow_deadline() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        // Establish the OS socket before pausing time: simulated time may otherwise
+        // advance the listener's deadline while the connect syscall is pending.
+        let _stalled = tokio::net::TcpStream::connect(address).await.unwrap();
+        tokio::time::pause();
+        let callback = tokio::spawn(async move { await_callback(listener, "state").await });
+        assert!(matches!(
+            callback.await.unwrap(),
+            Err(OAuthError::CallbackTimeout)
+        ));
+    }
     #[test]
     fn pkce_verifier_length() {
         let v = generate_pkce_verifier();
