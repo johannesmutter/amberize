@@ -53,7 +53,7 @@ From repo root:
    - Left sidebar → **Release**
    - Click the run for tag `vX.Y.Z`
 4. Wait for `.github/workflows/release.yml` to finish (all matrix jobs).
-   - The Linux job extracts each AppImage and checks that `.DirIcon` and the root desktop file resolve inside the package and that `AppRun` is executable. Do not publish if this check fails.
+   - The Linux job extracts each AppImage and checks metadata links, readability/traversal for unrelated users, and executable `AppRun` plus `AppRun.wrapped`. It also checks bundled glibc references against the Ubuntu 22.04 baseline and starts a root-owned extracted package under a separate user. Do not publish if these checks fail.
 5. Confirm the **draft** GitHub Release has assets:
    - GitHub repo → **Releases** → open `vX.Y.Z`
    - Assets should include installers and updater files, e.g.:
@@ -72,6 +72,8 @@ From repo root:
 ### AppImage catalog retest
 
 The AppImage catalog reported a broken `.DirIcon` in `v0.2.3`: it linked to an absolute path on the GitHub build runner. Tauri CLI 2.11.4 fixes this by creating relative metadata links; keep the desktop CLI dependency at 2.11.4 or newer and commit its lockfile. See the [upstream fix](https://github.com/tauri-apps/tauri/pull/15596).
+
+Its later test of `v0.2.4` exposed root-owned `AppRun.wrapped` with mode `0770`. The `beforeBundleCommand` now prepares Tauri's pinned upstream launcher with mode `0755`; this runs before signing and uploading, including local package builds. A build-user-only execution check is insufficient because it can retain access that a mounted AppImage denies to ordinary users.
 
 After publishing a new release with the corrected AppImage, comment `/retest` on [AppImage catalog PR #8381](https://github.com/AppImage/appimage.github.io/pull/8381).
 
