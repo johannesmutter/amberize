@@ -156,8 +156,19 @@
   "website_image": "registry.fly.io/amberize:deployment-01M3WWY9QMGGFK2FXTVE74GSFK",
   "website_source_commit": "266eef0ec3b6fe2729e2a9ae942cc2a295c30f40",
   "catalog_retest": {
-    "status": "awaiting explicit approval to post /retest",
-    "pull_request": "https://github.com/AppImage/appimage.github.io/pull/8381"
+    "status": "passed",
+    "pull_request": "https://github.com/AppImage/appimage.github.io/pull/8381",
+    "run": "https://github.com/AppImage/appimage.github.io/actions/runs/36943203771",
+    "catalog_commit": "ba1cee327c69e2beeaad3ccf9461e3868b50babd",
+    "report": "https://github.com/AppImage/appimage.github.io/pull/8381#issuecomment-5942946239",
+    "tested_asset_url": "https://github.com/johannesmutter/amberize/releases/download/v0.2.7/Amberize_0.2.7_amd64.AppImage",
+    "downloaded_asset_size": 90057208,
+    "main_window_found": true,
+    "window_screenshot_captured": true,
+    "glibc_required": "2.35",
+    "external_appimage_update_metadata_present": false,
+    "remaining_warning": "External AppImageUpdate tools are unsupported; Amberize uses its separate signed Tauri updater",
+    "scope": "Catalog startup and packaging test; no mailbox sync or end-to-end Linux updater installation"
   },
   "limits": [
     "Intel Mac was cross-built; matching-hardware native execution not performed",
