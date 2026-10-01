@@ -1,0 +1,106 @@
+name: Developer ID replacement verification
+
+on:
+  push:
+    branches: [codex/renew-developer-id-20261001]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - name: Verify replacement key, signing continuity and Apple notarization
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import secrets
+          import shutil
+          import subprocess
+          import tempfile
+
+          expected_sha256 = '2F42872376382254252F78127BB851AB4072EFF4F9F52C99CBB2289AD4AE6396'
+          expected_sha1 = 'C79EBA63F13A12C63C287D1C35569DADAFA5388F'
+          expected_team = '4Y5FU7KFWS'
+          old_requirement = 'identifier "com.amberize.app" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "4Y5FU7KFWS"'
+          for name in ('APPLE_CERTIFICATE', 'APPLE_CERTIFICATE_PASSWORD', 'APPLE_ID', 'APPLE_PASSWORD', 'APPLE_TEAM_ID'):
+              if not os.environ.get(name):
+                  raise RuntimeError('Required signing setting is missing: ' + name)
+          if os.environ['APPLE_TEAM_ID'] != expected_team:
+              raise RuntimeError('Unexpected signing team')
+          os.umask(0o077)
+          directory = Path(tempfile.mkdtemp(prefix='amberize-g2-', dir=os.environ['RUNNER_TEMP']))
+          keychain = directory / 'verification.keychain-db'
+          keychain_password = secrets.token_urlsafe(32)
+          report = Path(os.environ['RUNNER_TEMP']) / 'certificate-renewal-report.json'
+
+          def run(args):
+              result = subprocess.run(args, capture_output=True, timeout=600)
+              if result.returncode:
+                  raise RuntimeError(Path(args[0]).name + ' failed with exit status ' + str(result.returncode))
+              return result.stdout
+
+          try:
+              package = directory / 'identity.p12'
+              package.write_bytes(base64.b64decode(os.environ['APPLE_CERTIFICATE'], validate=True))
+              run(['security', 'create-keychain', '-p', keychain_password, str(keychain)])
+              run(['security', 'set-keychain-settings', '-lut', '3600', str(keychain)])
+              run(['security', 'unlock-keychain', '-p', keychain_password, str(keychain)])
+              run(['security', 'list-keychains', '-d', 'user', '-s', str(keychain)])
+              run(['security', 'import', str(package), '-k', str(keychain), '-P', os.environ['APPLE_CERTIFICATE_PASSWORD'], '-T', '/usr/bin/codesign'])
+              run(['security', 'set-key-partition-list', '-S', 'apple-tool:,apple:,codesign:', '-s', '-k', keychain_password, str(keychain)])
+              identities = run(['security', 'find-identity', '-v', '-p', 'codesigning', str(keychain)]).decode()
+              if expected_sha1 not in identities:
+                  raise RuntimeError('Replacement signing identity is not usable')
+              source = directory / 'probe.c'
+              source.write_text('int main(void) { return 0; }\n')
+              executable = directory / 'amberize-certificate-probe'
+              run(['clang', '-arch', 'arm64', '-arch', 'x86_64', str(source), '-o', str(executable)])
+              run(['codesign', '--force', '--sign', expected_sha1, '--keychain', str(keychain), '--identifier', 'com.amberize.app', '--options', 'runtime', '--timestamp', str(executable)])
+              run(['codesign', '--verify', '--strict', '-R=' + old_requirement, str(executable)])
+              prefix = directory / 'signed-cert-'
+              run(['codesign', '-d', '--extract-certificates=' + str(prefix), str(executable)])
+              leaf = Path(str(prefix) + '0')
+              fingerprint = hashlib.sha256(leaf.read_bytes()).hexdigest().upper()
+              if fingerprint != expected_sha256:
+                  raise RuntimeError('Signed executable has the wrong certificate')
+              details = run(['openssl', 'x509', '-inform', 'DER', '-in', str(leaf), '-noout', '-issuer', '-dates']).decode()
+              if 'OU=G2' not in details and 'OU = G2' not in details:
+                  raise RuntimeError('Signed certificate is not issued by G2')
+              signature = subprocess.run(['codesign', '-dvvv', str(executable)], capture_output=True, check=True).stderr.decode()
+              if 'Timestamp=' not in signature:
+                  raise RuntimeError('Secure signing timestamp is missing')
+              archive = directory / 'probe.zip'
+              run(['ditto', '-c', '-k', '--keepParent', str(executable), str(archive)])
+              result = json.loads(run(['xcrun', 'notarytool', 'submit', str(archive), '--apple-id', os.environ['APPLE_ID'], '--password', os.environ['APPLE_PASSWORD'], '--team-id', os.environ['APPLE_TEAM_ID'], '--wait', '--output-format', 'json']))
+              if result.get('status') != 'Accepted':
+                  raise RuntimeError('Apple did not accept the signed verification executable')
+              proof = {'certificate_sha256': fingerprint, 'signing_identity_sha1': expected_sha1, 'team_id': expected_team, 'certificate_details': details.strip(), 'architectures': ['arm64', 'x86_64'], 'secure_timestamp': True, 'strict_signature_verification': True, 'matches_published_app_requirement': True, 'notarization_status': result['status'], 'scope': 'Isolated verification executable; no Amberize release or installed app changed'}
+              report.write_text(json.dumps(proof, indent=2) + '\n')
+              print(json.dumps(proof, indent=2))
+          finally:
+              if keychain.exists():
+                  subprocess.run(['security', 'delete-keychain', str(keychain)], capture_output=True)
+              shutil.rmtree(directory)
+          PY
+
+      - name: Save public verification report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: developer-id-g2-verification
+          path: ${{ runner.temp }}/certificate-renewal-report.json
+          if-no-files-found: error
+          retention-days: 30
