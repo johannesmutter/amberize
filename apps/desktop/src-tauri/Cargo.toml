@@ -42,3 +42,6 @@ tauri-plugin-autostart = "2"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }

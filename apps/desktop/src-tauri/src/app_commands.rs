@@ -825,10 +825,9 @@ pub async fn sync_account_once_command(
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    if !active
-        .as_ref()
-        .is_some_and(|active| same_file::is_same_file(active, &db_path).unwrap_or(false))
-    {
+    if !active.as_ref().is_some_and(|active| {
+        email_archiver_storage::is_same_archive_file(active, &db_path).unwrap_or(false)
+    }) {
         return Err(
             "The active archive changed. Retry synchronization from the current archive.".into(),
         );
@@ -926,10 +925,9 @@ pub async fn sync_all_accounts_command(
         .lock()
         .map_err(|e| e.to_string())?
         .clone();
-    if !active
-        .as_ref()
-        .is_some_and(|active| same_file::is_same_file(active, &db_path).unwrap_or(false))
-    {
+    if !active.as_ref().is_some_and(|active| {
+        email_archiver_storage::is_same_archive_file(active, &db_path).unwrap_or(false)
+    }) {
         return Err(
             "The active archive changed. Retry synchronization from the current archive.".into(),
         );

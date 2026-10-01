@@ -76,8 +76,35 @@ struct ConnectionOwner {
     root_scans: AtomicU64,
 }
 type SharedConnection = Arc<ConnectionOwner>;
+#[cfg(unix)]
+type FileIdentity = (u64, u64);
+#[cfg(not(unix))]
+type FileIdentity = same_file::Handle;
+
+fn file_identity(path: &Path) -> std::io::Result<FileIdentity> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path)?;
+        Ok((metadata.dev(), metadata.ino()))
+    }
+    #[cfg(not(unix))]
+    {
+        same_file::Handle::from_path(path)
+    }
+}
+
+/// Compare archive/export aliases without closing independent database handles.
+/// On Unix, closing any descriptor for an open SQLite database drops its locks.
+pub fn is_same_archive_file(
+    first: impl AsRef<Path>,
+    second: impl AsRef<Path>,
+) -> std::io::Result<bool> {
+    Ok(file_identity(first.as_ref())? == file_identity(second.as_ref())?)
+}
+
 struct CachedConnection {
-    identity: same_file::Handle,
+    identity: FileIdentity,
     owner: Weak<ConnectionOwner>,
     keepalive: Option<SharedConnection>,
 }
@@ -105,20 +132,10 @@ impl Storage {
 
     /// Restore/read an archive without creating a file or accepting another SQLite database.
     pub fn open_existing(db_path: impl AsRef<Path>) -> StorageResult<Self> {
-        use std::io::Read;
         let path = db_path.as_ref();
-        let mut file = std::fs::File::open(path)?;
-        if !file.metadata()?.is_file() {
+        if !std::fs::metadata(path)?.is_file() {
             return Err(StorageError::InvalidArchive(
                 "choose an archive file".into(),
-            ));
-        }
-        let mut header = [0_u8; 16];
-        file.read_exact(&mut header)
-            .map_err(|_| StorageError::InvalidArchive("file is not a SQLite archive".into()))?;
-        if &header != b"SQLite format 3\0" {
-            return Err(StorageError::InvalidArchive(
-                "file is not a SQLite archive".into(),
             ));
         }
         let storage = Self::connect(path, false, true)?;
@@ -170,7 +187,7 @@ impl Storage {
 
     fn connect(path: &Path, create: bool, cached: bool) -> StorageResult<Self> {
         if path.as_os_str() != ":memory:" && cached && path.exists() {
-            let identity = same_file::Handle::from_path(path)?;
+            let identity = file_identity(path)?;
             let mut cache = CONNECTIONS.lock().map_err(|_| StorageError::LockPoisoned)?;
             cache.retain(|entry| entry.owner.strong_count() > 0);
             if let Some(index) = cache.iter().position(|entry| entry.identity == identity) {
@@ -212,7 +229,7 @@ impl Storage {
             root_scans: AtomicU64::new(0),
         });
         if cached && path.as_os_str() != ":memory:" {
-            let identity = same_file::Handle::from_path(path)?;
+            let identity = file_identity(path)?;
             let mut cache = CONNECTIONS.lock().map_err(|_| StorageError::LockPoisoned)?;
             cache.retain(|entry| entry.owner.strong_count() > 0);
             if let Some(existing) = cache.iter().find(|entry| entry.identity == identity) {
@@ -4977,15 +4994,27 @@ mod tests {
     fn reopening_archive_preserves_sqlite_locks_against_other_processes() {
         let storage = Storage::open_in_memory_for_tests().unwrap();
         let probe = || {
-            let output = std::process::Command::new(std::env::current_exe().unwrap())
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--ignored",
                     "--exact",
                     "tests::archive_exclusive_access_probe",
                 ])
                 .env("AMBERIZE_QA_LOCK_PROBE_PATH", storage.db_path())
-                .output()
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
                 .unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while child.try_wait().unwrap().is_none() {
+                if std::time::Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("archive lock probe timed out");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
             assert!(
                 output.status.success(),
                 "{}{}",
@@ -4997,6 +5026,15 @@ mod tests {
         let reopened = Storage::open_existing(storage.db_path()).unwrap();
         assert!(Arc::ptr_eq(&storage.connection, &reopened.connection));
         probe();
+        let hardlink = test_db_path();
+        let symlink = test_db_path();
+        std::fs::hard_link(storage.db_path(), &hardlink).unwrap();
+        std::os::unix::fs::symlink(storage.db_path(), &symlink).unwrap();
+        assert!(is_same_archive_file(storage.db_path(), &hardlink).unwrap());
+        assert!(is_same_archive_file(storage.db_path(), &symlink).unwrap());
+        probe();
+        std::fs::remove_file(hardlink).unwrap();
+        std::fs::remove_file(symlink).unwrap();
     }
     #[test]
     fn unchanged_root_is_reused_but_local_and_external_blob_mutations_invalidate_it() {

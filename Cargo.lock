@@ -63,6 +63,7 @@ dependencies = [
  "email_archiver_adapters",
  "email_archiver_storage",
  "mail-parser",
+ "rusqlite",
  "same-file",
  "serde",
  "serde_json",

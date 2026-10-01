@@ -61,7 +61,7 @@ pub fn validate_destination(archive: &Path, output: &Path) -> io::Result<()> {
         if destination == path
             || (destination.exists()
                 && path.exists()
-                && same_file::is_same_file(&path, &destination)?)
+                && email_archiver_storage::is_same_archive_file(&path, &destination)?)
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -121,6 +121,70 @@ pub fn atomic_export_cancellable<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "invoked by the cross-process export lock regression"]
+    fn export_exclusive_access_probe() {
+        let path = std::env::var_os("AMBERIZE_QA_LOCK_PROBE_PATH").unwrap();
+        let conn = rusqlite::Connection::open(PathBuf::from(path)).unwrap();
+        conn.busy_timeout(std::time::Duration::from_millis(100))
+            .unwrap();
+        conn.execute_batch("PRAGMA locking_mode=EXCLUSIVE").unwrap();
+        let result = conn.query_row("SELECT COUNT(*) FROM schema_meta", [], |row| {
+            row.get::<_, i64>(0)
+        });
+        assert!(
+            matches!(result, Err(rusqlite::Error::SqliteFailure(error, _))
+            if error.code == rusqlite::ErrorCode::DatabaseBusy),
+            "archive locks released: {result:?}"
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn destination_checks_preserve_open_archive_locks() {
+        use std::time::{Duration, Instant};
+        let dir = tempfile::tempdir().unwrap();
+        let storage =
+            email_archiver_storage::Storage::create_new(dir.path().join("archive.db")).unwrap();
+        let probe = || {
+            let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--ignored",
+                    "--exact",
+                    "output::tests::export_exclusive_access_probe",
+                ])
+                .env("AMBERIZE_QA_LOCK_PROBE_PATH", storage.db_path())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+                .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while child.try_wait().unwrap().is_none() {
+                if Instant::now() >= deadline {
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    panic!("export lock probe timed out");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        probe();
+        let output = dir.path().join("export.zip");
+        std::fs::write(&output, b"previous export").unwrap();
+        validate_destination(storage.db_path(), &output).unwrap();
+        probe();
+        let alias = dir.path().join("alias.zip");
+        std::fs::hard_link(storage.db_path(), &alias).unwrap();
+        assert!(validate_destination(storage.db_path(), &alias).is_err());
+        probe();
+    }
     #[test]
     fn cancellation_before_publication_preserves_output_and_late_cancel_reports_published() {
         let dir = tempfile::tempdir().unwrap();
