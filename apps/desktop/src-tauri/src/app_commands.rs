@@ -676,33 +676,56 @@ pub fn set_account_password(
     Ok(())
 }
 
+async fn archive_activation_guard<'a>(
+    state: &'a AppState,
+    db_path: &str,
+) -> Result<(PathBuf, Option<tokio::sync::MutexGuard<'a, ()>>), String> {
+    let validated = validate_db_path(db_path)?;
+    let canonical=validated.canonicalize().map_err(|e|format!("The saved archive is unavailable at {}: {e}. Reconnect its drive or choose the existing file.",validated.display()))?;
+    let canonical_text = canonical.to_str().ok_or_else(|| {
+        "The archive path contains unsupported characters. Move it to a path with valid Unicode characters, then select the existing file.".to_string()
+    })?;
+    let already_active = || -> Result<bool, String> {
+        Ok(state
+            .active_db_path
+            .lock()
+            .map_err(|e| e.to_string())?
+            .as_deref()
+            == Some(canonical_text))
+    };
+    // Recreated windows acknowledge the current archive without waiting for a
+    // potentially long provider sync or changing ownership/status.
+    if already_active()? {
+        return Ok((canonical, None));
+    }
+    let guard = state.sync_lock.lock().await;
+    // Another activation may have selected this archive while we waited.
+    if already_active()? {
+        return Ok((canonical, None));
+    }
+    Ok((canonical, Some(guard)))
+}
+
 #[tauri::command]
 pub async fn set_active_db_path(
     app_handle: AppHandle,
     state: State<'_, AppState>,
     db_path: String,
 ) -> Result<(), String> {
-    let _guard = state.sync_lock.lock().await;
-    let validated = validate_db_path(&db_path)?;
-    let canonical=validated.canonicalize().map_err(|e|format!("The saved archive is unavailable at {}: {e}. Reconnect its drive or choose the existing file.",validated.display()))?;
-    let already_active = state
-        .active_db_path
-        .lock()
-        .map_err(|e| e.to_string())?
-        .as_deref()
-        == canonical.to_str();
+    let (canonical, guard) = archive_activation_guard(&state, &db_path).await?;
+    let Some(_guard) = guard else {
+        return Ok(());
+    };
     let worker_app = app_handle.clone();
     let path = canonical.to_string_lossy().into_owned();
     tauri::async_runtime::spawn_blocking(move || crate::bootstrap::activate(&worker_app, &path))
         .await
         .map_err(|e| e.to_string())??;
     state.sync_wakeup.notify_one();
-    if !already_active {
-        if let Ok(mut warning) = state.startup_warning.lock() {
-            *warning = None;
-        }
-        crate::bootstrap::verify_async(app_handle);
+    if let Ok(mut warning) = state.startup_warning.lock() {
+        *warning = None;
     }
+    crate::bootstrap::verify_async(app_handle);
     Ok(())
 }
 
@@ -2081,5 +2104,188 @@ mod image_tests {
         png[20..24].copy_from_slice(&100_u32.to_be_bytes());
         assert!(image_within_pixel_limit(&png));
         assert!(!image_within_pixel_limit(b"unknown format"));
+    }
+}
+
+#[cfg(test)]
+mod archive_restore_tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn run(future: impl std::future::Future<Output = ()>) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future);
+    }
+
+    fn fixture() -> (tempfile::TempDir, PathBuf, AppState) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("archive.sqlite3");
+        let file = std::fs::File::create(&path).unwrap();
+        let state = AppState::default();
+        *state.active_db_path.lock().unwrap() =
+            Some(path.canonicalize().unwrap().to_string_lossy().into_owned());
+        *state.archive_lock.lock().unwrap() = Some(file);
+        *state.startup_warning.lock().unwrap() = Some("preserved warning".into());
+        state.set_sync_in_progress(true);
+        state.last_sync.lock().unwrap().last_sync_status = "Syncing".into();
+        (directory, path, state)
+    }
+
+    fn assert_preserved(state: &AppState, path: &Path) {
+        assert_eq!(
+            state.active_db_path.lock().unwrap().as_deref(),
+            path.canonicalize().unwrap().to_str()
+        );
+        assert!(state.archive_lock.lock().unwrap().is_some());
+        assert_eq!(
+            state.startup_warning.lock().unwrap().as_deref(),
+            Some("preserved warning")
+        );
+        assert!(state.sync_in_progress());
+        assert_eq!(state.last_sync.lock().unwrap().last_sync_status, "Syncing");
+    }
+
+    #[test]
+    fn same_archive_restores_while_sync_lock_is_held() {
+        run(async {
+            let (_directory, path, state) = fixture();
+            let _sync_guard = state.sync_lock.lock().await;
+            let (canonical, guard) = tokio::time::timeout(
+                Duration::from_millis(100),
+                archive_activation_guard(&state, path.to_str().unwrap()),
+            )
+            .await
+            .expect("restoring the active archive must not wait for sync")
+            .unwrap();
+            assert_eq!(canonical, path.canonicalize().unwrap());
+            assert!(guard.is_none());
+            assert_preserved(&state, &path);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(5), state.sync_wakeup.notified())
+                    .await
+                    .is_err()
+            );
+        });
+    }
+
+    #[test]
+    fn different_archive_waits_for_sync_before_activation() {
+        run(async {
+            let (directory, path, state) = fixture();
+            let other = directory.path().join("other.sqlite3");
+            std::fs::File::create(&other).unwrap();
+            let sync_guard = state.sync_lock.lock().await;
+            let activation = archive_activation_guard(&state, other.to_str().unwrap());
+            tokio::pin!(activation);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), activation.as_mut())
+                    .await
+                    .is_err()
+            );
+            assert_preserved(&state, &path);
+            drop(sync_guard);
+            let (canonical, guard) = tokio::time::timeout(Duration::from_millis(100), activation)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(canonical, other.canonicalize().unwrap());
+            assert!(guard.is_some());
+        });
+    }
+
+    #[test]
+    fn missing_archive_fails_promptly_and_preserves_active_archive() {
+        run(async {
+            let (directory, path, state) = fixture();
+            let _sync_guard = state.sync_lock.lock().await;
+            let missing = directory.path().join("missing.sqlite3");
+            let error = tokio::time::timeout(
+                Duration::from_millis(100),
+                archive_activation_guard(&state, missing.to_str().unwrap()),
+            )
+            .await
+            .expect("missing archives must not wait for sync")
+            .unwrap_err();
+            assert!(error.contains("saved archive is unavailable"));
+            assert!(!missing.exists());
+            assert_preserved(&state, &path);
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_to_active_archive_does_not_wait_for_sync() {
+        run(async {
+            let (directory, path, state) = fixture();
+            let alias = directory.path().join("alias.sqlite3");
+            std::os::unix::fs::symlink(&path, &alias).unwrap();
+            let _sync_guard = state.sync_lock.lock().await;
+            let (canonical, guard) = tokio::time::timeout(
+                Duration::from_millis(100),
+                archive_activation_guard(&state, alias.to_str().unwrap()),
+            )
+            .await
+            .expect("canonical aliases must not wait for sync")
+            .unwrap();
+            assert_eq!(canonical, path.canonicalize().unwrap());
+            assert!(guard.is_none());
+            assert_preserved(&state, &path);
+        });
+    }
+
+    // APFS rejects these filenames before path resolution; Linux permits them.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn non_unicode_target_is_not_mistaken_for_an_active_archive() {
+        use std::os::unix::ffi::OsStringExt;
+        run(async {
+            let directory = tempfile::tempdir().unwrap();
+            let target = directory.path().join(std::ffi::OsString::from_vec(
+                b"archive-\xff.sqlite3".to_vec(),
+            ));
+            std::fs::File::create(&target).unwrap();
+            let alias = directory.path().join("alias.sqlite3");
+            std::os::unix::fs::symlink(&target, &alias).unwrap();
+            let state = AppState::default();
+            let _sync_guard = state.sync_lock.lock().await;
+            let error = tokio::time::timeout(
+                Duration::from_millis(100),
+                archive_activation_guard(&state, alias.to_str().unwrap()),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(error.contains("valid Unicode"));
+            assert!(state.active_db_path.lock().unwrap().is_none());
+        });
+    }
+
+    #[test]
+    fn rechecks_active_path_after_waiting_for_sync() {
+        run(async {
+            let (directory, path, state) = fixture();
+            let other = directory.path().join("other.sqlite3");
+            std::fs::File::create(&other).unwrap();
+            let sync_guard = state.sync_lock.lock().await;
+            let activation = archive_activation_guard(&state, other.to_str().unwrap());
+            tokio::pin!(activation);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(10), activation.as_mut())
+                    .await
+                    .is_err()
+            );
+            assert_preserved(&state, &path);
+            *state.active_db_path.lock().unwrap() =
+                Some(other.canonicalize().unwrap().to_string_lossy().into_owned());
+            drop(sync_guard);
+            let (_, guard) = tokio::time::timeout(Duration::from_millis(100), activation)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(guard.is_none(), "activation became redundant while waiting");
+        });
     }
 }

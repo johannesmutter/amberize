@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import time
+from uuid import UUID
 
 
 def fingerprint(path):
@@ -34,10 +35,15 @@ def main():
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--windows-vm-recovery-snapshot", type=UUID,
+                        help="Explicitly permit a fresh profile in a snapshotted local Windows QA VM")
     args = parser.parse_args()
     assert args.config_dir.name in ("com.amberize.app", "com.amberize.qa")
     if args.config_dir.name == "com.amberize.app":
-        assert os.environ.get("GITHUB_ACTIONS") == "true", "Production identity requires a fresh hosted CI profile"
+        assert (os.environ.get("GITHUB_ACTIONS") == "true" or
+                (os.name == "nt" and args.windows_vm_recovery_snapshot is not None)), (
+            "Production identity requires fresh hosted CI or an explicitly snapshotted Windows QA VM"
+        )
     assert not args.config_dir.exists(), "Refusing to change an existing application profile"
     fixture = args.fixture.resolve(strict=True)
     baseline = fingerprint(fixture)
@@ -103,6 +109,7 @@ def main():
         report = {"passed": True, "stages": stages, "counts": baseline["counts"],
                   "mime_hash_manifest_sha256": hashlib.sha256(json.dumps(baseline["hashes"]).encode()).hexdigest(),
                   "binary_sha256": hashlib.sha256(Path(args.binary).read_bytes()).hexdigest(),
+                  "windows_vm_recovery_snapshot": str(args.windows_vm_recovery_snapshot) if args.windows_vm_recovery_snapshot else None,
                   "limitations": ["No login or reboot", "No provider credentials", "No window or recovery-copy assertions",
                                   "Processes stopped forcibly to exercise crash/restart persistence"]}
     except BaseException as error:
