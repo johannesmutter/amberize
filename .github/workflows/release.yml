@@ -600,7 +600,13 @@ jobs:
           assert subprocess.check_output(['git','rev-parse','v0.2.4-8^{}'],text=True).strip()==r['targetCommitish']
           assert hashlib.sha256((root/os.environ['QA_PAYLOAD']).read_bytes()).hexdigest()==os.environ['QA_PAYLOAD_SHA256']
           PY
-          git archive v0.2.3 | tar -x -C "$RUNNER_TEMP/amberize-nonmac-old"
+          python - <<'PYCODE'
+          import io,os,pathlib,subprocess,tarfile
+          destination=pathlib.Path(os.environ['RUNNER_TEMP'])/'amberize-nonmac-old'
+          assert destination.is_dir() and not any(destination.iterdir())
+          with tarfile.open(fileobj=io.BytesIO(subprocess.check_output(['git','archive','v0.2.3']))) as archive:
+              archive.extractall(destination,filter='data')
+          PYCODE
           python scripts/nonmac_updater_smoke.py prepare "$RUNNER_TEMP/amberize-nonmac-old"
           cargo build -p email_archiver_storage --release --example qa_fixture --locked
           cargo build -p email_archiver_adapters --release --example qa_keychain --locked
