@@ -57,6 +57,7 @@ def main():
     saved = {"db_path": str(fixture), "sync_interval_secs": 3600}
     config.write_text(json.dumps(saved))
     stages = []
+    attempts = []
     environment = dict(os.environ)
     if os.name != "nt" and os.sys.platform != "darwin":
         environment["XDG_CONFIG_HOME"] = str(args.config_dir.parent)
@@ -65,6 +66,8 @@ def main():
     def boot(label, missing=False, corrupt_settings=False):
         started = None if missing else event_count(fixture, "app_started")
         verified = None if missing else event_count(fixture, "integrity_check")
+        attempt = {"stage": label, "started_before": started, "verified_before": verified}
+        attempts.append(attempt)
         with log.open("ab") as output:
             command = [args.binary, "--background"]
             if args.trace:
@@ -109,6 +112,16 @@ def main():
                         os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+                if not missing:
+                    # Preserve the backend's actual outcome when an assertion fails.
+                    # This fresh QA profile contains synthetic messages only.
+                    with closing(sqlite3.connect(fixture)) as connection:
+                        attempt["event_counts"] = dict(connection.execute(
+                            "SELECT kind,COUNT(*) FROM events GROUP BY kind"))
+                        attempt["recent_events"] = [dict(zip(("id", "kind", "detail"), row))
+                            for row in connection.execute(
+                                "SELECT id,kind,detail FROM events ORDER BY id DESC LIMIT 12")]
+                        attempt["sqlite_quick_check"] = connection.execute("PRAGMA quick_check").fetchone()[0]
 
     try:
         boot("installed release restored and verified saved archive without a window")
@@ -125,14 +138,14 @@ def main():
         config.with_suffix(".json.previous").write_text(json.dumps(saved))
         config.write_text("{")
         boot("damaged settings recovered the previous archive and interval", corrupt_settings=True)
-        report = {"passed": True, "stages": stages, "counts": baseline["counts"],
+        report = {"passed": True, "stages": stages, "attempts": attempts, "counts": baseline["counts"],
                   "mime_hash_manifest_sha256": hashlib.sha256(json.dumps(baseline["hashes"]).encode()).hexdigest(),
                   "binary_sha256": hashlib.sha256(Path(args.binary).read_bytes()).hexdigest(),
                   "windows_vm_recovery_snapshot": str(args.windows_vm_recovery_snapshot) if args.windows_vm_recovery_snapshot else None,
                   "limitations": ["No login or reboot", "No provider credentials", "No window or recovery-copy assertions",
                                   "Processes stopped forcibly to exercise crash/restart persistence"]}
     except BaseException as error:
-        report = {"passed": False, "stages": stages, "error": str(error)}
+        report = {"passed": False, "stages": stages, "attempts": attempts, "error": str(error)}
         raise
     finally:
         args.report.write_text(json.dumps(report, indent=2) + "\n")

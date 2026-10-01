@@ -84,6 +84,11 @@ jobs:
                 cp "$qa_root/home/unrelated-user.$suffix" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.$suffix"
               fi
             done
+            if [ -f "$qa_root/home/archive.sqlite3" ]; then
+              sudo -u amberize-qa-user "$qa_root/verify-fixture" verify "$qa_root/home/archive.sqlite3" \
+                > "$RUNNER_TEMP/amberize-qa/unrelated-user-final-integrity.json" \
+                2> "$RUNNER_TEMP/amberize-qa/unrelated-user-final-integrity.log" || true
+            fi
             sudo rm -rf "$qa_root"
           }
           trap preserve_and_clean EXIT
