@@ -28,7 +28,8 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve(strict=True)
     metadata = json.loads(args.metadata.read_text())
-    assert metadata["isDraft"] and metadata["isPrerelease"], "Candidate must remain unpublished"
+    assert metadata["isDraft"], "Release must remain an unpublished draft"
+    assert metadata["isPrerelease"] == ("-" in args.tag.removeprefix("v")), "Prerelease status differs from tag"
     assert metadata["tagName"] == args.tag and metadata["targetCommitish"] == args.commit
     inventory = {}
     for item in metadata["assets"]:

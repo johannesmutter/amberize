@@ -8004,7 +8004,10 @@
       "/private/tmp/amberize-native-ui-candidate9-20261001/native-google-fields-dark.png",
       "/private/tmp/amberize-native-ui-candidate9-20261001/native-google-fields-dark-populated.png"
     ],
-    "scope": "Isolated local candidate9 source build, Intel/Rosetta, per-window Dark theme, ad hoc signature; exact signed packaging verified separately"
+    "scope": "Isolated local candidate9 source build, Intel/Rosetta, per-window Dark theme, ad hoc signature; exact signed packaging verified separately",
+    "form_canceled_without_connecting": true,
+    "production_and_live_settings_preserved": true,
+    "normal_quit_exited": true
   },
   "release_0_2_4_preparation": {
     "requested_at_utc": "2026-10-01T19:25:15.929059+00:00",
@@ -8016,7 +8019,1002 @@
     "version": "0.2.4",
     "shared_google_permission_review_deferred": true,
     "manual_coverage_limits_documented": "docs/releases/0.2.4.md",
-    "stable_artifacts_pending": true,
-    "published": false
+    "stable_artifacts_pending": false,
+    "published": true,
+    "release_commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+    "release_run": "https://github.com/johannesmutter/amberize/actions/runs/36914282262",
+    "ci_run": "https://github.com/johannesmutter/amberize/actions/runs/36914281218",
+    "stable_updater_pending": false,
+    "stable_updater_run": "https://github.com/johannesmutter/amberize/actions/runs/36917529766",
+    "published_at": "2026-10-01T20:08:23Z",
+    "website_deployment_pending": false
+  },
+  "stable_0_2_4_artifact_verification": {
+    "passed": true,
+    "native_packages": {
+      "native-qa-aarch64-apple-darwin/native.json": {
+        "passed": true,
+        "binary_sha256": "7f6f9b0275558b2f0736f595cfd6d99d0c8886bec61b0548582a6bd87586ba4e",
+        "stages": [
+          "installed release restored and verified saved archive without a window",
+          "process restart preserved archive path, interval, counts, and MIME hashes",
+          "unavailable archive kept saved path and did not create a replacement",
+          "reconnected archive restored and verified",
+          "damaged settings recovered the previous archive and interval"
+        ],
+        "all_1024_hashes_preserved": true,
+        "full_integrity": {
+          "chain_checked": true,
+          "chain_checked_at": "2026-10-01T19:45:01.109078Z",
+          "chain_checked_events": 1040,
+          "chain_first_mismatch_event_id": null,
+          "chain_ok": true,
+          "checked_at": "2026-10-01T19:45:01.109078Z",
+          "checkpoint_blob_count": null,
+          "checkpoint_root_hash": null,
+          "content_checked": true,
+          "content_checked_at": "2026-10-01T19:45:01.109078Z",
+          "content_checked_blobs": 1024,
+          "content_ok": true,
+          "current_blob_count": 1024,
+          "current_root_hash": "a4a3a5f3bd9e360433944a770f2e258cef4eec24dfaf44b15a6d5de47531e1e2",
+          "incomplete_sync": false,
+          "issues": [],
+          "ok": true,
+          "root_checked": true,
+          "root_checked_at": "2026-10-01T19:45:01.109078Z",
+          "root_hash_ok": true,
+          "schema_checked": true,
+          "schema_checked_at": "2026-10-01T19:45:01.109078Z",
+          "schema_ok": true
+        }
+      },
+      "native-qa-x86_64-unknown-linux-gnu/appimage-native.json": {
+        "passed": true,
+        "binary_sha256": "eb0b254ac0dae6543e6dd7cd02e1baf40a060de95b927313122d6b46323c00aa",
+        "stages": [
+          "installed release restored and verified saved archive without a window",
+          "process restart preserved archive path, interval, counts, and MIME hashes",
+          "unavailable archive kept saved path and did not create a replacement",
+          "reconnected archive restored and verified",
+          "damaged settings recovered the previous archive and interval"
+        ],
+        "all_1024_hashes_preserved": true,
+        "full_integrity": {
+          "chain_checked": true,
+          "chain_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "chain_checked_events": 1056,
+          "chain_first_mismatch_event_id": null,
+          "chain_ok": true,
+          "checked_at": "2026-10-01T19:44:53.376895522Z",
+          "checkpoint_blob_count": null,
+          "checkpoint_root_hash": null,
+          "content_checked": true,
+          "content_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "content_checked_blobs": 1024,
+          "content_ok": true,
+          "current_blob_count": 1024,
+          "current_root_hash": "a4a3a5f3bd9e360433944a770f2e258cef4eec24dfaf44b15a6d5de47531e1e2",
+          "incomplete_sync": false,
+          "issues": [],
+          "ok": true,
+          "root_checked": true,
+          "root_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "root_hash_ok": true,
+          "schema_checked": true,
+          "schema_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "schema_ok": true
+        }
+      },
+      "native-qa-x86_64-unknown-linux-gnu/native.json": {
+        "passed": true,
+        "binary_sha256": "e70a4d7acbe725cf05e20fa3821726a88a38c662c01422bc2384b6cb11f682b8",
+        "stages": [
+          "installed release restored and verified saved archive without a window",
+          "process restart preserved archive path, interval, counts, and MIME hashes",
+          "unavailable archive kept saved path and did not create a replacement",
+          "reconnected archive restored and verified",
+          "damaged settings recovered the previous archive and interval"
+        ],
+        "all_1024_hashes_preserved": true,
+        "full_integrity": {
+          "chain_checked": true,
+          "chain_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "chain_checked_events": 1056,
+          "chain_first_mismatch_event_id": null,
+          "chain_ok": true,
+          "checked_at": "2026-10-01T19:44:53.376895522Z",
+          "checkpoint_blob_count": null,
+          "checkpoint_root_hash": null,
+          "content_checked": true,
+          "content_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "content_checked_blobs": 1024,
+          "content_ok": true,
+          "current_blob_count": 1024,
+          "current_root_hash": "a4a3a5f3bd9e360433944a770f2e258cef4eec24dfaf44b15a6d5de47531e1e2",
+          "incomplete_sync": false,
+          "issues": [],
+          "ok": true,
+          "root_checked": true,
+          "root_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "root_hash_ok": true,
+          "schema_checked": true,
+          "schema_checked_at": "2026-10-01T19:44:53.376895522Z",
+          "schema_ok": true
+        }
+      },
+      "native-qa-x86_64-pc-windows-msvc/native.json": {
+        "passed": true,
+        "binary_sha256": "f5d4be6635a2b435793d1c6a225a67d334a78ab52a436e0e8a523fbfd4c3f9bd",
+        "stages": [
+          "installed release restored and verified saved archive without a window",
+          "process restart preserved archive path, interval, counts, and MIME hashes",
+          "unavailable archive kept saved path and did not create a replacement",
+          "reconnected archive restored and verified",
+          "damaged settings recovered the previous archive and interval"
+        ],
+        "all_1024_hashes_preserved": true,
+        "full_integrity": {
+          "chain_checked": true,
+          "chain_checked_at": "2026-10-01T19:46:39.0756263Z",
+          "chain_checked_events": 1040,
+          "chain_first_mismatch_event_id": null,
+          "chain_ok": true,
+          "checked_at": "2026-10-01T19:46:39.0756263Z",
+          "checkpoint_blob_count": null,
+          "checkpoint_root_hash": null,
+          "content_checked": true,
+          "content_checked_at": "2026-10-01T19:46:39.0756263Z",
+          "content_checked_blobs": 1024,
+          "content_ok": true,
+          "current_blob_count": 1024,
+          "current_root_hash": "a4a3a5f3bd9e360433944a770f2e258cef4eec24dfaf44b15a6d5de47531e1e2",
+          "incomplete_sync": false,
+          "issues": [],
+          "ok": true,
+          "root_checked": true,
+          "root_checked_at": "2026-10-01T19:46:39.0756263Z",
+          "root_hash_ok": true,
+          "schema_checked": true,
+          "schema_checked_at": "2026-10-01T19:46:39.0756263Z",
+          "schema_ok": true
+        }
+      }
+    },
+    "identities": {
+      "aarch64": {
+        "payload_sha256": "fe6478d0fb4a64af21809db3bf0e9a7fa1c200d58517a7063be734ec246cf41f",
+        "binary_sha256": "7f6f9b0275558b2f0736f595cfd6d99d0c8886bec61b0548582a6bd87586ba4e"
+      },
+      "x64": {
+        "payload_sha256": "8708af02f251f0b3b0b345ff6cfc02f02122bc27b6cf1b112ba30f1b4b2c9451",
+        "binary_sha256": "a4ea8ee032928a2ff5fb71ea04775af1b90d56861b304af1978a243185433700"
+      },
+      "windows": {
+        "payload_sha256": "b678a0d0ba1d71d2d0e7390ca168017af564c5f324655936e5df17267ecbcb2c",
+        "zip_matches_canonical_msi": true,
+        "installed_sha256": "f5d4be6635a2b435793d1c6a225a67d334a78ab52a436e0e8a523fbfd4c3f9bd"
+      },
+      "linux": {
+        "payload_sha256": "bc2d1d2537f4c9620ccd0dfcd1f83f2b94cce900f2e18cb927b3efbb5e0fe583",
+        "installed_sha256": "a5719bbc29a89477efd59ec5f07148e3e1444965d8e227f0c1ac4ac4d308b1da",
+        "tar_matches_canonical_appimage": true
+      }
+    },
+    "assets": {
+      "passed": true,
+      "tag": "v0.2.4",
+      "candidate_commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+      "unpublished_draft": true,
+      "assets": {
+        "Amberize_0.2.4_aarch64.dmg": {
+          "size": 10211698,
+          "sha256": "e30c8e4a086dfbb2170cbc3c0863b5681acdef88f25a1edc023e3d6b746a29d5"
+        },
+        "Amberize_0.2.4_amd64.AppImage": {
+          "size": 87661048,
+          "sha256": "a5719bbc29a89477efd59ec5f07148e3e1444965d8e227f0c1ac4ac4d308b1da"
+        },
+        "Amberize_0.2.4_amd64.AppImage.sig": {
+          "size": 420,
+          "sha256": "48b18d1acb64a87e0b3b35db88bfe536b8cb36cbbc9184fcd8ecf3fdc9e78f88"
+        },
+        "Amberize_0.2.4_amd64.AppImage.tar.gz": {
+          "size": 87025984,
+          "sha256": "bc2d1d2537f4c9620ccd0dfcd1f83f2b94cce900f2e18cb927b3efbb5e0fe583"
+        },
+        "Amberize_0.2.4_amd64.AppImage.tar.gz.sig": {
+          "size": 428,
+          "sha256": "37eabe375ef1487ba9d749ea3ad326f57b4969524ff723d7a2a7664a3132f1f8"
+        },
+        "Amberize_0.2.4_amd64.deb": {
+          "size": 10533618,
+          "sha256": "e6f87e75abe50ae94f12d66a8c61d6bc2e5073a9eb4115b33db18c1a3f372225"
+        },
+        "Amberize_0.2.4_amd64.deb.sig": {
+          "size": 412,
+          "sha256": "8d6a8577a0e9712f9204d4c686b21fb429d45fc125e84e66291235876efd895f"
+        },
+        "Amberize_0.2.4_x64.dmg": {
+          "size": 10856404,
+          "sha256": "3e27de1a283c239687d7c91ca41ebadab9afae565b4a5a671bae9c8296109bb3"
+        },
+        "Amberize_0.2.4_x64_en-US.msi": {
+          "size": 7315456,
+          "sha256": "1aa2dd2127e5295107ba75ea0900dcc70f20b66c3beb0a2b1124cea9edfe89f4"
+        },
+        "Amberize_0.2.4_x64_en-US.msi.sig": {
+          "size": 420,
+          "sha256": "e9c839acad3f628a1cdf8901d278a6e2c213a52d066b4b141b3ce4b3d4775683"
+        },
+        "Amberize_0.2.4_x64_en-US.msi.zip": {
+          "size": 7315610,
+          "sha256": "b678a0d0ba1d71d2d0e7390ca168017af564c5f324655936e5df17267ecbcb2c"
+        },
+        "Amberize_0.2.4_x64_en-US.msi.zip.sig": {
+          "size": 424,
+          "sha256": "892229b7fbc882bcba397da8b2ce4336474c2ff34616fe12ea27b88ea3db1721"
+        },
+        "Amberize_aarch64.app.tar.gz": {
+          "size": 9120548,
+          "sha256": "fe6478d0fb4a64af21809db3bf0e9a7fa1c200d58517a7063be734ec246cf41f"
+        },
+        "Amberize_aarch64.app.tar.gz.sig": {
+          "size": 408,
+          "sha256": "fe49724672a5ea45d815272eb1e6fc226352c72e96b0df189e008755fd38cd13"
+        },
+        "Amberize_x64.app.tar.gz": {
+          "size": 9660173,
+          "sha256": "8708af02f251f0b3b0b345ff6cfc02f02122bc27b6cf1b112ba30f1b4b2c9451"
+        },
+        "Amberize_x64.app.tar.gz.sig": {
+          "size": 408,
+          "sha256": "c61ed35bef2ac9981503a505f3032bd8803bf91191ee863dd43ca2dd3e058a14"
+        },
+        "latest.json": {
+          "size": 5452,
+          "sha256": "31e0754a001ef86f9adb13681285e23d33fbf1846dc3a345cb6b01ac15487d2e"
+        }
+      },
+      "verified_signatures": [
+        "Amberize_0.2.4_amd64.AppImage",
+        "Amberize_0.2.4_amd64.AppImage.tar.gz",
+        "Amberize_0.2.4_amd64.deb",
+        "Amberize_0.2.4_x64_en-US.msi",
+        "Amberize_0.2.4_x64_en-US.msi.zip",
+        "Amberize_aarch64.app.tar.gz",
+        "Amberize_x64.app.tar.gz"
+      ],
+      "verified_platforms": {
+        "darwin-x86_64": "Amberize_x64.app.tar.gz",
+        "darwin-x86_64-app": "Amberize_x64.app.tar.gz",
+        "darwin-aarch64": "Amberize_aarch64.app.tar.gz",
+        "darwin-aarch64-app": "Amberize_aarch64.app.tar.gz",
+        "linux-x86_64": "Amberize_0.2.4_amd64.AppImage.tar.gz",
+        "linux-x86_64-appimage": "Amberize_0.2.4_amd64.AppImage",
+        "linux-x86_64-deb": "Amberize_0.2.4_amd64.deb",
+        "windows-x86_64": "Amberize_0.2.4_x64_en-US.msi.zip",
+        "windows-x86_64-msi": "Amberize_0.2.4_x64_en-US.msi"
+      },
+      "tampered_payload_rejected": true
+    },
+    "macos_assessments": {
+      "candidate": "v0.2.4",
+      "commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+      "architectures": {
+        "aarch64": {
+          "app_signature": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/aarch64/Amberize.app: valid on disk\n/private/tmp/amberize-stable-0.2.4-20261001/aarch64/Amberize.app: satisfies its Designated Requirement\n"
+          },
+          "app_staple": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "Processing: /private/tmp/amberize-stable-0.2.4-20261001/aarch64/Amberize.app\nThe validate action worked!\n"
+          },
+          "app_gatekeeper": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/aarch64/Amberize.app: accepted\nsource=Notarized Developer ID\n"
+          },
+          "dmg_signature": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_aarch64.dmg: valid on disk\n/private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_aarch64.dmg: satisfies its Designated Requirement\n"
+          },
+          "dmg_staple": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "Processing: /private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_aarch64.dmg\nThe validate action worked!\n"
+          },
+          "dmg_gatekeeper": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_aarch64.dmg: accepted\nsource=Notarized Developer ID\n"
+          }
+        },
+        "x64": {
+          "app_signature": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/x64/Amberize.app: valid on disk\n/private/tmp/amberize-stable-0.2.4-20261001/x64/Amberize.app: satisfies its Designated Requirement\n"
+          },
+          "app_staple": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "Processing: /private/tmp/amberize-stable-0.2.4-20261001/x64/Amberize.app\nThe validate action worked!\n"
+          },
+          "app_gatekeeper": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/x64/Amberize.app: accepted\nsource=Notarized Developer ID\n"
+          },
+          "dmg_signature": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_x64.dmg: valid on disk\n/private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_x64.dmg: satisfies its Designated Requirement\n"
+          },
+          "dmg_staple": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "Processing: /private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_x64.dmg\nThe validate action worked!\n"
+          },
+          "dmg_gatekeeper": {
+            "passed": true,
+            "exit_code": 0,
+            "output": "/private/tmp/amberize-stable-0.2.4-20261001/Amberize_0.2.4_x64.dmg: accepted\nsource=Notarized Developer ID\n"
+          }
+        }
+      },
+      "passed": true
+    },
+    "release_build_run": "https://github.com/johannesmutter/amberize/actions/runs/36914282262",
+    "stable_updater_run": "https://github.com/johannesmutter/amberize/actions/runs/36917529766",
+    "stable_updater_pending": true
+  },
+  "stable_0_2_4_updater_verification": {
+    "passed": true,
+    "updaters": {
+      "windows-x86_64": {
+        "passed": true,
+        "all_1024_hashes_preserved": true,
+        "full_integrity_passed": true,
+        "rollback_verified_by_older_library": true,
+        "report_sha256": "b87021dcc7ea1c295c40d3ca639b3afee97ee0efab9f7476f516370615eaf9fa",
+        "report_fields": {
+          "passed": true,
+          "platform": "windows-x86_64",
+          "candidate_commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+          "candidate_payload_sha256": "b678a0d0ba1d71d2d0e7390ca168017af564c5f324655936e5df17267ecbcb2c",
+          "old_tag": "v0.2.3",
+          "old_binary_sha256": "05ece86445404b9b73fb5ec68d1e37521657556ca5cccf9fd8dd39354278991b",
+          "stages": [
+            {
+              "mode": "bad_signature",
+              "passed": true,
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "install_error"
+              ]
+            },
+            {
+              "mode": "interrupted",
+              "passed": true,
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "install_error"
+              ]
+            },
+            {
+              "mode": "success",
+              "passed": true,
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked"
+              ]
+            }
+          ],
+          "differences": [
+            "Old source rebuilt with a loopback staging endpoint and native UI observer",
+            "Old package lock identity corrected; external dependency versions preserved"
+          ],
+          "limitations": [
+            "Fresh hosted CI, no OS reboot or SmartScreen/browser-quarantine test",
+            "Linux secure-storage upgrade is not tested; Windows uses a synthetic fixture credential"
+          ],
+          "windows_cross_process_secure_storage_passed": true,
+          "credential_scope": "Synthetic credential seeded by the repaired library; v0.2.3 Windows used a nonpersistent mock store",
+          "credential_upgrade": {
+            "new_process_keychain_read_passed": true,
+            "provider_connection_attempted": true,
+            "provider_login_attempted": false,
+            "event_id": 1033,
+            "credential_value_recorded": false
+          },
+          "restarted_binary_sha256": "f5d4be6635a2b435793d1c6a225a67d334a78ab52a436e0e8a523fbfd4c3f9bd",
+          "new_process_restored_and_verified_archive": true,
+          "mime_hashes_preserved": 1024,
+          "schema_migration": "2 to 3",
+          "account_references_preserved": true,
+          "saved_configuration_preserved": true,
+          "older_archive_backup_verified_by_old_library": true,
+          "requests": [
+            {
+              "mode": "bad_signature",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "bad_signature",
+              "path": "/candidate.tar.gz"
+            },
+            {
+              "mode": "interrupted",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "interrupted",
+              "path": "/candidate.tar.gz"
+            },
+            {
+              "mode": "success",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "success",
+              "path": "/candidate.tar.gz"
+            }
+          ]
+        },
+        "payload_matches_independently_verified_stable": true,
+        "installed_hash_matches_expected_stable": true
+      },
+      "darwin-aarch64": {
+        "passed": true,
+        "all_1024_hashes_preserved": true,
+        "full_integrity_passed": true,
+        "rollback_verified_by_older_library": true,
+        "report_sha256": "6da3d380d4b1bf3dac1d0aba1be83d2315320178958fd9749cdfdc736c401d58",
+        "report_fields": {
+          "passed": true,
+          "candidate_commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+          "candidate_payload_sha256": "fe6478d0fb4a64af21809db3bf0e9a7fa1c200d58517a7063be734ec246cf41f",
+          "old_tag": "v0.2.3",
+          "old_build_binary_sha256": "1371f27e62707b4903b61b9d4822cc9f1fff523558b57bd5f57f3fe935d2c3e1",
+          "old_archive_schema_version": 2,
+          "test_endpoint": "http://127.0.0.1:18743/latest.json",
+          "stages": [
+            {
+              "mode": "bad_signature",
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "install_error"
+              ],
+              "passed": true
+            },
+            {
+              "mode": "interrupted",
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "install_error"
+              ],
+              "passed": true
+            },
+            {
+              "mode": "success",
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "installed",
+                "restart_clicked"
+              ],
+              "passed": true
+            }
+          ],
+          "differences": [
+            "Older source rebuilt with a loopback-only HTTP staging endpoint",
+            "Old workspace lock entry corrected from 0.2.2 to 0.2.3; external dependency versions unchanged",
+            "Older instrumented app signed with the production Developer ID; candidate payload is the exact signed draft",
+            "Updater artifact generation disabled for the temporary older build",
+            "Old native setup gains a test-only observer that clicks unmodified UI buttons"
+          ],
+          "limitations": [
+            "Hosted macOS Apple Silicon only",
+            "No actual OS reboot",
+            "Synthetic Keychain credential and deliberately unavailable loopback provider; no real provider login"
+          ],
+          "old_and_candidate_designated_requirements_match": true,
+          "old_launch_at_login": {
+            "/Users/runner/Library/LaunchAgents/Amberize.plist": {
+              "sha256": "b3e5f1bcec83018340aa4ebb6c9f97f72a67ce37b338ba278d95fd74dbf0deda",
+              "value": {
+                "Label": "Amberize",
+                "ProgramArguments": [
+                  "/Users/runner/work/_temp/amberize-updater-evidence/installed/Amberize.app/Contents/MacOS/Amberize"
+                ],
+                "RunAtLoad": true
+              }
+            }
+          },
+          "updated_launch_at_login": {
+            "/Users/runner/Library/LaunchAgents/Amberize.plist": {
+              "sha256": "ea4e7c340e1d17d8478f3ce7f7f0ecb9d53d6383dd3813ca50054e6fba953aed",
+              "value": {
+                "Label": "Amberize",
+                "ProgramArguments": [
+                  "/Users/runner/work/_temp/amberize-updater-evidence/installed/Amberize.app/Contents/MacOS/Amberize",
+                  "--background"
+                ],
+                "RunAtLoad": true
+              }
+            }
+          },
+          "launch_at_login_refreshed_for_background": true,
+          "restarted_binary_sha256": "7f6f9b0275558b2f0736f595cfd6d99d0c8886bec61b0548582a6bd87586ba4e",
+          "new_process_restored_and_verified_archive": true,
+          "keychain_upgrade": {
+            "new_process_keychain_read_passed": true,
+            "provider_connection_attempted": true,
+            "provider_login_attempted": false,
+            "event_id": 1033,
+            "credential_value_recorded": false
+          },
+          "updated_archive_schema_version": 3,
+          "older_archive_backup_verified_by_old_library": true,
+          "mime_hashes_preserved": 1024,
+          "account_credential_references_preserved": true,
+          "launch_at_login_preserved": true,
+          "requests": [
+            {
+              "mode": "bad_signature",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "bad_signature",
+              "path": "/candidate.tar.gz"
+            },
+            {
+              "mode": "interrupted",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "interrupted",
+              "path": "/candidate.tar.gz"
+            },
+            {
+              "mode": "success",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "success",
+              "path": "/candidate.tar.gz"
+            }
+          ]
+        },
+        "payload_matches_independently_verified_stable": true,
+        "installed_hash_matches_expected_stable": true
+      },
+      "linux-x86_64": {
+        "passed": true,
+        "all_1024_hashes_preserved": true,
+        "full_integrity_passed": true,
+        "rollback_verified_by_older_library": true,
+        "report_sha256": "1fc692c7ae7d5437c78ab6412fc81b391d146415485c77be2e46d317b1b5d1be",
+        "report_fields": {
+          "passed": true,
+          "platform": "linux-x86_64",
+          "candidate_commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+          "candidate_payload_sha256": "bc2d1d2537f4c9620ccd0dfcd1f83f2b94cce900f2e18cb927b3efbb5e0fe583",
+          "old_tag": "v0.2.3",
+          "old_binary_sha256": "6836ff5949841009c80ee88762da8bd31a8d2ebf98d7acd215466698d218f791",
+          "stages": [
+            {
+              "mode": "bad_signature",
+              "passed": true,
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "install_error"
+              ]
+            },
+            {
+              "mode": "interrupted",
+              "passed": true,
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "install_error"
+              ]
+            },
+            {
+              "mode": "success",
+              "passed": true,
+              "ui_observations": [
+                "ready",
+                "update_available",
+                "install_clicked",
+                "installed",
+                "restart_clicked"
+              ]
+            }
+          ],
+          "differences": [
+            "Old source rebuilt with a loopback staging endpoint and native UI observer",
+            "Old package lock identity corrected; external dependency versions preserved"
+          ],
+          "limitations": [
+            "Fresh hosted CI, no OS reboot or SmartScreen/browser-quarantine test",
+            "Linux secure-storage upgrade is not tested; Windows uses a synthetic fixture credential"
+          ],
+          "restarted_binary_sha256": "a5719bbc29a89477efd59ec5f07148e3e1444965d8e227f0c1ac4ac4d308b1da",
+          "new_process_restored_and_verified_archive": true,
+          "mime_hashes_preserved": 1024,
+          "schema_migration": "2 to 3",
+          "account_references_preserved": true,
+          "saved_configuration_preserved": true,
+          "older_archive_backup_verified_by_old_library": true,
+          "requests": [
+            {
+              "mode": "bad_signature",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "bad_signature",
+              "path": "/candidate.tar.gz"
+            },
+            {
+              "mode": "interrupted",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "interrupted",
+              "path": "/candidate.tar.gz"
+            },
+            {
+              "mode": "success",
+              "path": "/latest.json"
+            },
+            {
+              "mode": "success",
+              "path": "/candidate.tar.gz"
+            }
+          ]
+        },
+        "payload_matches_independently_verified_stable": true,
+        "installed_hash_matches_expected_stable": true
+      }
+    },
+    "matching_intel_native": {
+      "passed": true,
+      "report": {
+        "passed": true,
+        "stages": [
+          "installed release restored and verified saved archive without a window",
+          "process restart preserved archive path, interval, counts, and MIME hashes",
+          "unavailable archive kept saved path and did not create a replacement",
+          "reconnected archive restored and verified",
+          "damaged settings recovered the previous archive and interval"
+        ],
+        "counts": {
+          "accounts": 1,
+          "mailboxes": 1,
+          "message_blobs": 1024,
+          "message_locations": 1024
+        },
+        "mime_hash_manifest_sha256": "f3bb9b223d343c9d354402ceb5a8896afc0b18f949708638d6b0643bf6057cef",
+        "binary_sha256": "a4ea8ee032928a2ff5fb71ea04775af1b90d56861b304af1978a243185433700",
+        "windows_vm_recovery_snapshot": null,
+        "limitations": [
+          "No login or reboot",
+          "No provider credentials",
+          "No window or recovery-copy assertions",
+          "Processes stopped forcibly to exercise crash/restart persistence"
+        ]
+      },
+      "hardware": {
+        "machine": "x86_64",
+        "os": "macOS-15.7.9-x86_64-i386-64bit-Mach-O",
+        "exact_candidate_binary": true,
+        "full_integrity_passed": true,
+        "all_1024_hashes_preserved": true
+      },
+      "all_1024_hashes_preserved": true,
+      "full_integrity_passed": true
+    },
+    "run": "https://github.com/johannesmutter/amberize/actions/runs/36917529766",
+    "qa_commit": "2e59d7224b3198dcfb82a131daf5eeddb9ed2fd8"
+  },
+  "stable_release_ci": {
+    "run": "https://github.com/johannesmutter/amberize/actions/runs/36914281218",
+    "commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+    "passed": true,
+    "jobs": [
+      {
+        "name": "rust (ubuntu-latest, false)",
+        "conclusion": "success"
+      },
+      {
+        "name": "scripts",
+        "conclusion": "success"
+      },
+      {
+        "name": "rust (macos-latest, true)",
+        "conclusion": "success"
+      },
+      {
+        "name": "rust (windows-latest, false)",
+        "conclusion": "success"
+      },
+      {
+        "name": "ui",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "stable_release_builds": {
+    "run": "https://github.com/johannesmutter/amberize/actions/runs/36914282262",
+    "commit": "40fd6af103f15ef3621ef2af8f42c7edf32118df",
+    "passed": true,
+    "jobs": [
+      {
+        "name": "validation / scripts",
+        "conclusion": "success"
+      },
+      {
+        "name": "validation / rust (macos-latest, true)",
+        "conclusion": "success"
+      },
+      {
+        "name": "validation / rust (windows-latest, false)",
+        "conclusion": "success"
+      },
+      {
+        "name": "validation / ui",
+        "conclusion": "success"
+      },
+      {
+        "name": "validation / rust (ubuntu-latest, false)",
+        "conclusion": "success"
+      },
+      {
+        "name": "build (aarch64-apple-darwin, macos-latest, app,dmg)",
+        "conclusion": "success"
+      },
+      {
+        "name": "build (x86_64-unknown-linux-gnu, ubuntu-latest, appimage,deb)",
+        "conclusion": "success"
+      },
+      {
+        "name": "build (x86_64-apple-darwin, macos-latest, app,dmg)",
+        "conclusion": "success"
+      },
+      {
+        "name": "build (x86_64-pc-windows-msvc, windows-latest, msi)",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "stable_updater_ci": {
+    "run": "https://github.com/johannesmutter/amberize/actions/runs/36917529020",
+    "commit": "2e59d7224b3198dcfb82a131daf5eeddb9ed2fd8",
+    "passed": true,
+    "jobs": [
+      {
+        "name": "rust (macos-latest, true)",
+        "conclusion": "success"
+      },
+      {
+        "name": "scripts",
+        "conclusion": "success"
+      },
+      {
+        "name": "ui",
+        "conclusion": "success"
+      },
+      {
+        "name": "rust (ubuntu-latest, false)",
+        "conclusion": "success"
+      },
+      {
+        "name": "rust (windows-latest, false)",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "stable_0_2_4_publication": {
+    "passed": true,
+    "published_at": "2026-10-01T20:08:23Z",
+    "release_url": "https://github.com/johannesmutter/amberize/releases/tag/v0.2.4",
+    "latest_public_version": "0.2.4",
+    "all_17_assets_available_over_verified_https": true,
+    "public_digests_match_verified_draft": true,
+    "public_manifest_matches_verified_draft": true,
+    "assets": [
+      {
+        "name": "Amberize_0.2.4_aarch64.dmg",
+        "public_https_status": 200,
+        "size": 10211698
+      },
+      {
+        "name": "Amberize_0.2.4_amd64.AppImage",
+        "public_https_status": 200,
+        "size": 87661048
+      },
+      {
+        "name": "Amberize_0.2.4_amd64.AppImage.sig",
+        "public_https_status": 200,
+        "size": 420
+      },
+      {
+        "name": "Amberize_0.2.4_amd64.AppImage.tar.gz",
+        "public_https_status": 200,
+        "size": 87025984
+      },
+      {
+        "name": "Amberize_0.2.4_amd64.AppImage.tar.gz.sig",
+        "public_https_status": 200,
+        "size": 428
+      },
+      {
+        "name": "Amberize_0.2.4_amd64.deb",
+        "public_https_status": 200,
+        "size": 10533618
+      },
+      {
+        "name": "Amberize_0.2.4_amd64.deb.sig",
+        "public_https_status": 200,
+        "size": 412
+      },
+      {
+        "name": "Amberize_0.2.4_x64.dmg",
+        "public_https_status": 200,
+        "size": 10856404
+      },
+      {
+        "name": "Amberize_0.2.4_x64_en-US.msi",
+        "public_https_status": 200,
+        "size": 7315456
+      },
+      {
+        "name": "Amberize_0.2.4_x64_en-US.msi.sig",
+        "public_https_status": 200,
+        "size": 420
+      },
+      {
+        "name": "Amberize_0.2.4_x64_en-US.msi.zip",
+        "public_https_status": 200,
+        "size": 7315610
+      },
+      {
+        "name": "Amberize_0.2.4_x64_en-US.msi.zip.sig",
+        "public_https_status": 200,
+        "size": 424
+      },
+      {
+        "name": "Amberize_aarch64.app.tar.gz",
+        "public_https_status": 200,
+        "size": 9120548
+      },
+      {
+        "name": "Amberize_aarch64.app.tar.gz.sig",
+        "public_https_status": 200,
+        "size": 408
+      },
+      {
+        "name": "Amberize_x64.app.tar.gz",
+        "public_https_status": 200,
+        "size": 9660173
+      },
+      {
+        "name": "Amberize_x64.app.tar.gz.sig",
+        "public_https_status": 200,
+        "size": 408
+      },
+      {
+        "name": "latest.json",
+        "public_https_status": 200,
+        "size": 5452
+      }
+    ]
+  },
+  "stable_0_2_4_website_deployment": {
+    "passed": true,
+    "verified_at_utc": "2026-10-01T20:13:10.137524+00:00",
+    "url": "https://amberize.fly.dev/",
+    "version": "0.2.4",
+    "image": "registry.fly.io/amberize:deployment-01M3WHCJ6G0S90RE1DR69FFPCR",
+    "digest": "sha256:bab01a952776740709a1b9dce638eb44c95284837019ab672b941f96f9777de9",
+    "both_machines_updated": true,
+    "previous_image": "registry.fly.io/amberize:deployment-01M3VX2KYM0CKQ3HAD8WKD90ZQ",
+    "checks": {
+      "passed": true,
+      "checks": [
+        {
+          "url": "https://amberize.fly.dev/",
+          "status": 200,
+          "sha256": "ca0682b71c58c5bb419f4de1af02b798e5cb99e9eec57820951e6b8bb1e78a75",
+          "tls_certificate_verified": true,
+          "direct_download_links": [
+            "https://github.com/johannesmutter/amberize/releases/download/v0.2.4/Amberize_0.2.4_aarch64.dmg",
+            "https://github.com/johannesmutter/amberize/releases/download/v0.2.4/Amberize_0.2.4_amd64.AppImage",
+            "https://github.com/johannesmutter/amberize/releases/download/v0.2.4/Amberize_0.2.4_amd64.deb",
+            "https://github.com/johannesmutter/amberize/releases/download/v0.2.4/Amberize_0.2.4_x64.dmg",
+            "https://github.com/johannesmutter/amberize/releases/download/v0.2.4/Amberize_0.2.4_x64_en-US.msi"
+          ],
+          "version": "0.2.4"
+        },
+        {
+          "url": "https://amberize.fly.dev/datenschutz",
+          "status": 200,
+          "sha256": "24bb84fe285d26104def18c4b22812542b2958ae86df85321948fe16855394cb",
+          "tls_certificate_verified": true,
+          "expected_legal_content_present": true
+        },
+        {
+          "url": "https://amberize.fly.dev/impressum",
+          "status": 200,
+          "sha256": "6e1fbb9d1d35f039a90f2cb55b8fbda18f209aaf9aca556519dfbb94e0fb3c23",
+          "tls_certificate_verified": true,
+          "expected_legal_content_present": true
+        }
+      ],
+      "all_five_downloads_point_to_public_0_2_4": true
+    },
+    "native_browser_download_menu_rendered": true,
+    "screenshot": "/private/tmp/amberize-stable-0.2.4-20261001/deployed-download-page.png",
+    "screenshot_sha256": "6c0033db26079698c0dc20325404d87f9f79041f6ca13ac3d5ab1c4873c72484"
+  },
+  "final_release_decision": {
+    "version": "0.2.4",
+    "published": true,
+    "website_deployed": true,
+    "all_final_artifact_and_updater_checks_passed": true,
+    "shared_google_oauth_verification": "Separate follow-up; release retains user-supplied Desktop client",
+    "manual_coverage_limits": "docs/releases/0.2.4.md",
+    "working_mac_reboot_performed": false,
+    "production_local_app_replaced": false,
+    "trusted_live_mailbox_bundle_replaced": false
+  },
+  "qa_generated_build_cleanup": {
+    "started_at": "2026-10-01T20:17:37.602645+00:00",
+    "paths": [
+      {
+        "path": "/private/tmp/amberize-review-zncutt5s/target",
+        "allocated_bytes_before": 12642238464,
+        "removed": true
+      },
+      {
+        "path": "/private/tmp/amberize-review-zncutt5s/cargo-home",
+        "allocated_bytes_before": 1416929280,
+        "removed": true
+      },
+      {
+        "path": "/private/tmp/amberize-export-profile-20261001",
+        "allocated_bytes_before": 1551716352,
+        "removed": true
+      },
+      {
+        "path": "/private/tmp/amberize-audit-target",
+        "allocated_bytes_before": 655441920,
+        "removed": true
+      }
+    ],
+    "reports_preserved": "/private/tmp/amberize-stable-0.2.4-20261001/preserved-export-reports",
+    "signature_verifier_preserved": true,
+    "live_mailbox_touched": false,
+    "parallels_touched": false,
+    "finished_at": "2026-10-01T20:20:57.411759+00:00"
   }
 }
