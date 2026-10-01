@@ -352,10 +352,19 @@
         </form>
       {:else}
         {#if !google_configured}
-          <details open><summary>Configure a Google Desktop OAuth client</summary>
-            <p>Use a Desktop app client from your Google Cloud project with Gmail access enabled.</p>
-            <label for="google-client-id">Client ID</label><input id="google-client-id" bind:value={google_client_id} disabled={busy} />
-            <label for="google-client-secret">Client secret</label><input id="google-client-secret" type="password" bind:value={google_client_secret} disabled={busy} />
+          <details class="oauth-client" open>
+            <summary class="label">Configure a Google Desktop OAuth client</summary>
+            <div class="form oauth-client-fields">
+              <p class="hint">Use a Desktop app client from your Google Cloud project with Gmail access enabled.</p>
+              <div class="form-group">
+                <label class="label" for="google-client-id">Client ID</label>
+                <input id="google-client-id" class="input" bind:value={google_client_id} disabled={busy} />
+              </div>
+              <div class="form-group">
+                <label class="label" for="google-client-secret">Client secret</label>
+                <input id="google-client-secret" class="input" type="password" bind:value={google_client_secret} disabled={busy} />
+              </div>
+            </div>
           </details>
         {/if}
         <!-- Google OAuth -->
@@ -471,6 +480,18 @@
     color: var(--color-text-secondary);
     margin: 0 0 var(--space-xl);
     font-size: var(--font-size-sm);
+  }
+
+  .oauth-client {
+    margin-bottom: var(--space-xl);
+  }
+
+  .oauth-client summary {
+    cursor: pointer;
+  }
+
+  .oauth-client-fields {
+    margin-top: var(--space-md);
   }
 
   /* Auth method selector */
