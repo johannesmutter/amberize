@@ -336,20 +336,20 @@ jobs:
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/amberize-updater-inputs"
-          gh release view v0.2.4-6 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-updater-inputs/candidate.json"
-          gh release download v0.2.4-6 --pattern Amberize_aarch64.app.tar.gz --pattern latest.json --dir "$RUNNER_TEMP/amberize-updater-inputs"
+          gh release view v0.2.4-7 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-updater-inputs/candidate.json"
+          gh release download v0.2.4-7 --pattern Amberize_aarch64.app.tar.gz --pattern latest.json --dir "$RUNNER_TEMP/amberize-updater-inputs"
           python3 - <<'PY'
           import hashlib, json, os, pathlib, subprocess
           root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'amberize-updater-inputs'
           release = json.loads((root / 'candidate.json').read_text())
-          assert release['isDraft'] and release['isPrerelease'] and release['tagName'] == 'v0.2.4-6'
-          assert release['targetCommitish'] == '676f4736adb877cd29cb413c40e3c2ff908c1523'
-          assert subprocess.check_output(['git','rev-parse','v0.2.4-6'],text=True).strip() == release['targetCommitish']
+          assert release['isDraft'] and release['isPrerelease'] and release['tagName'] == 'v0.2.4-7'
+          assert release['targetCommitish'] == 'bcdb730817eae47a9d6b615a9182c1dbdcb900f7'
+          assert subprocess.check_output(['git','rev-parse','v0.2.4-7^{}'],text=True).strip() == release['targetCommitish']
           assert subprocess.check_output(['git','rev-parse','v0.2.3'],text=True).strip() == '12df2be7fd5d16f03445ecdcf9d31a057f405e6b'
           old = json.loads(subprocess.check_output(['git','show','v0.2.3:apps/desktop/src-tauri/tauri.conf.json']))
-          candidate = json.loads(subprocess.check_output(['git','show','v0.2.4-6:apps/desktop/src-tauri/tauri.conf.json']))
+          candidate = json.loads(subprocess.check_output(['git','show','v0.2.4-7:apps/desktop/src-tauri/tauri.conf.json']))
           assert old['plugins']['updater']['pubkey'] == candidate['plugins']['updater']['pubkey']
-          assert hashlib.sha256((root / 'Amberize_aarch64.app.tar.gz').read_bytes()).hexdigest() == 'bf9e42df5f9354872f7d3f49a726066e33583c961bd058244a6a07bae5c85652'
+          assert hashlib.sha256((root / 'Amberize_aarch64.app.tar.gz').read_bytes()).hexdigest() == '641d2fe8fe040e82f7234c46ee5128694b3c5127e500915ff39e12c5a574c48f'
           PY
       - name: Export and instrument the older source without changing its UI
         shell: bash
@@ -367,8 +367,22 @@ jobs:
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo build -p email_archiver_storage --release --example qa_updater_old_fixture --locked
           cd "$RUNNER_TEMP/amberize-updater-old/apps/desktop"
           npm ci
-          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" npx tauri build --bundles app -- --locked
-      - name: Exercise rejected package, interrupted download, install, and restart
+      - name: Build and sign isolated older app
+        uses: tauri-apps/tauri-action@79c624843491f12ae9d63592534ed49df3bc4adb # v0
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: ${{ runner.temp }}/amberize-updater-old/apps/desktop
+          tauriScript: npx tauri
+          args: --bundles app -- --locked
+          includeUpdaterJson: false
+          # No tagName/releaseId: build only, with no asset uploads/publication.
+      - name: Exercise rejected package, interrupted download, install, restart and Keychain access
         shell: bash
         run: |
           set -euo pipefail
@@ -379,8 +393,8 @@ jobs:
             --manifest "$RUNNER_TEMP/amberize-updater-inputs/latest.json" \
             --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
             --old-fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_updater_old_fixture" \
-            --candidate-sha256 bf9e42df5f9354872f7d3f49a726066e33583c961bd058244a6a07bae5c85652 \
-            --candidate-binary-sha256 7afeb24d9876a7661df6aaabe5e9f2dab4e30cf648c10d922f9b20fc514c5685
+            --candidate-sha256 641d2fe8fe040e82f7234c46ee5128694b3c5127e500915ff39e12c5a574c48f \
+            --candidate-binary-sha256 62a875eb04f9cd98d259b2ac71e1991cbc298ae4becff0726644b8f91a453447
       - name: Upload staging upgrade evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -16,9 +16,9 @@ import time
 
 from native_release_smoke import fingerprint, event_count
 
-VERSION = "0.2.4-6"
+VERSION = "0.2.4-7"
 PORT = 18743
-CANDIDATE_COMMIT = "676f4736adb877cd29cb413c40e3c2ff908c1523"
+CANDIDATE_COMMIT = "bcdb730817eae47a9d6b615a9182c1dbdcb900f7"
 
 
 def sha256(path):
@@ -79,6 +79,41 @@ def account_state(fixture):
 def schema_version(fixture):
     with closing(sqlite3.connect(f"file:{fixture}?mode=ro", uri=True)) as connection:
         return int(connection.execute("SELECT value FROM schema_meta WHERE key='schema_version'").fetchone()[0])
+
+
+def signed_requirement(app):
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    result = subprocess.run(["codesign", "-d", "-r-", str(app)], check=True,
+                            capture_output=True, text=True)
+    requirement = next(row.split("designated => ", 1)[1] for row in
+                       (result.stdout + result.stderr).splitlines() if row.startswith("designated => "))
+    assert 'identifier "com.amberize.app"' in requirement and "anchor apple generic" in requirement
+    assert 'certificate leaf[subject.OU] = "4Y5FU7KFWS"' in requirement
+    return requirement
+
+
+def new_process_keychain_observation(fixture, baseline_event_id):
+    # The production sync reads its saved secret before trying the TCP connection.
+    # Port 9 is deliberately closed. A new-process IMAP connection refusal proves
+    # that the updated signed app read the credential written by the old signed app.
+    with closing(sqlite3.connect(f"file:{fixture}?mode=ro", uri=True)) as connection:
+        started = connection.execute("SELECT MAX(id) FROM events WHERE id>? AND kind='app_started'",
+                                     (baseline_event_id,)).fetchone()[0]
+        if started is None:
+            return None
+        rows = connection.execute("SELECT id,detail FROM events WHERE id>? AND kind='ui_sync_finished' ORDER BY id",
+                                  (started,)).fetchall()
+    for event_id, detail in rows:
+        error = json.loads(detail).get("error")
+        if error is None:
+            continue
+        if error.startswith("qa@example.invalid: imap error:") and "connection refused" in error.lower():
+            return {"new_process_keychain_read_passed": True, "provider_connection_attempted": True,
+                    "provider_login_attempted": False, "event_id": event_id,
+                    "credential_value_recorded": False}
+        raise RuntimeError("Updated app did not reach the expected synthetic IMAP connection step")
+    return None
 
 
 def launch_agents(binary, require_background=False):
@@ -177,9 +212,16 @@ def run(args):
     manifest = json.loads(args.manifest.read_text())
     assert manifest["version"] == VERSION
     entry = manifest["platforms"]["darwin-aarch64"]
-    assert entry["url"].endswith("/v0.2.4-6/Amberize_aarch64.app.tar.gz")
+    assert entry["url"].endswith(f"/v{VERSION}/Amberize_aarch64.app.tar.gz")
     candidate = args.candidate.resolve(strict=True)
     assert sha256(candidate) == args.candidate_sha256
+    candidate_app = root / "signed-candidate"
+    candidate_app.mkdir()
+    subprocess.run(["tar", "-xzf", str(candidate), "-C", str(candidate_app)], check=True)
+    old_requirement = signed_requirement(args.old_app)
+    assert old_requirement == signed_requirement(candidate_app / "Amberize.app"), "Old/new signing requirements differ"
+    with closing(socket.socket()) as connection:
+        assert connection.connect_ex(("127.0.0.1", 9)) != 0, "Synthetic IMAP port must be closed"
     server = StagingServer(candidate, entry)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     installed = root / "installed/Amberize.app"
@@ -191,12 +233,12 @@ def run(args):
               "test_endpoint": f"http://127.0.0.1:{PORT}/latest.json", "stages": [],
               "differences": ["Older source rebuilt with a loopback-only HTTP staging endpoint",
                               "Old workspace lock entry corrected from 0.2.2 to 0.2.3; external dependency versions unchanged",
-                              "Unsigned older test build; candidate payload is the exact signed draft",
+                              "Older instrumented app signed with the production Developer ID; candidate payload is the exact signed draft",
                               "Updater artifact generation disabled for the temporary older build",
                               "Old native setup gains a test-only observer that clicks unmodified UI buttons"],
               "limitations": ["Hosted macOS Apple Silicon only", "No actual OS reboot",
-                              "Synthetic archive has no real provider credentials",
-                              "Does not establish signed old-app Keychain access after update"]}
+                              "Synthetic Keychain credential and deliberately unavailable loopback provider; no real provider login"],
+              "old_and_candidate_designated_requirements_match": True}
     agent_paths = []
     try:
         for mode in ("bad_signature", "interrupted", "success"):
@@ -229,6 +271,8 @@ def run(args):
                         continue
                 assert "automation_error" not in last_stages, "UI automation failed"
                 if "ready" in last_stages and old_agents is None:
+                    written = json.loads((phase / "keychain-written.json").read_text())
+                    assert written["synthetic_credential_written_by_old_app"] is True
                     old_agents = launch_agents(binary)
                     assert old_agents, "Older UI did not register launch at login"
                     agent_paths.extend(old_agents)
@@ -253,6 +297,11 @@ def run(args):
                         report["launch_at_login_refreshed_for_background"] = True
                         report["restarted_binary_sha256"] = sha256(binary)
                         report["new_process_restored_and_verified_archive"] = True
+                        observed = new_process_keychain_observation(fixture, restart_baseline["max_event_id"])
+                        if observed is None:
+                            time.sleep(.2)
+                            continue
+                        report["keychain_upgrade"] = observed
                         break
                 if mode == "success" and "install_error" in last_stages:
                     raise RuntimeError("Valid signed candidate installation failed")
@@ -290,6 +339,10 @@ def run(args):
         server.server_close()
         for path in set(agent_paths):
             Path(path).unlink(missing_ok=True)
+        for _, secret_ref in baseline_accounts:
+            assert secret_ref.startswith("qa-old-fixture/")
+            subprocess.run(["security", "delete-generic-password", "-s", "com.amberize.app", "-a", secret_ref],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         report["requests"] = server.requests
         report_path.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
