@@ -54,7 +54,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev squashfs-tools
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
@@ -145,7 +145,7 @@ jobs:
           for appimage in "${appimages[@]}"; do
             (
               cd "$extraction_dir"
-              "$appimage" --appimage-extract > /dev/null
+              python3 "$GITHUB_WORKSPACE/scripts/extract_appimage.py" "$appimage" "$extraction_dir/squashfs-root" > /dev/null
               appdir="$extraction_dir/squashfs-root"
               desktop_files=("$appdir/"*.desktop)
               if [ "${#desktop_files[@]}" -ne 1 ]; then
@@ -213,7 +213,7 @@ jobs:
             dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
             appimage=$(find "target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -print -quit)
             mkdir "$RUNNER_TEMP/amberize-appimage"
-            (cd "$RUNNER_TEMP/amberize-appimage" && "$GITHUB_WORKSPACE/$appimage" --appimage-extract > /dev/null)
+            python3 scripts/extract_appimage.py "$appimage" "$RUNNER_TEMP/amberize-appimage/squashfs-root" > /dev/null
             dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
           elif [ "${{ runner.os }}" = Windows ]; then
             powershell -NoProfile -File scripts/install_windows_qa.ps1

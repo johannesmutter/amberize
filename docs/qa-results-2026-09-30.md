@@ -8,6 +8,8 @@ The [catalog's October 1 test](https://github.com/AppImage/appimage.github.io/pu
 
 Version 0.2.5 preparation pins the existing upstream launcher's SHA-256 and sets its cache file to mode `0755` before Tauri copies it into the package, signs updater payloads and uploads assets. New tests reproduce and reject the exact `0770` failure, inaccessible nested directories, escaped metadata links and altered upstream bytes. The release workflow additionally checks every packaged entry's accessibility and executes a root-owned extracted AppImage as an unrelated user through all five saved-archive recovery stages. Linux builds move to Ubuntu 22.04 with an explicit bundled-ELF glibc ceiling of 2.35. Publication requires the actual packaged checks to pass; catalog acceptance remains pending a retest of the published correction.
 
+All five tagged v0.2.5 validation jobs and the Mac/Windows installer jobs passed. The first Linux permission check exposed a QA extraction limitation: the AppImage runtime's `--appimage-extract` creates private `0700` directories instead of restoring the stored directory permissions. Independent inspection of the exact downloaded package's SquashFS checked all 368 entries and confirmed both launchers and the application executable at mode `0755`; the pinned inner launcher bytes are unchanged. The corrected QA helper uses `unsquashfs` at the package's reported offset to restore the actual stored modes without applying a permission workaround. A separate hosted job verifies the same draft AppImage/Debian hashes, their actual modes/library references and native recovery, including the root-owned package under a different UID. No signed package or immutable tag is modified by this test correction.
+
 
 ## Publication and deployment
 

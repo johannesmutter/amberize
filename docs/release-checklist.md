@@ -75,6 +75,8 @@ The AppImage catalog reported a broken `.DirIcon` in `v0.2.3`: it linked to an a
 
 Its later test of `v0.2.4` exposed root-owned `AppRun.wrapped` with mode `0770`. The `beforeBundleCommand` now prepares Tauri's pinned upstream launcher with mode `0755`; this runs before signing and uploading, including local package builds. A build-user-only execution check is insufficient because it can retain access that a mounted AppImage denies to ordinary users.
 
+For permission checks, extract with `scripts/extract_appimage.py` and `unsquashfs`, which restores stored SquashFS modes. The runtime's `--appimage-extract` creates directories with private modes and therefore cannot establish whether the package's stored directories are accessible to unrelated users. Never chmod an extracted fixture to make a defective package pass.
+
 After publishing a new release with the corrected AppImage, comment `/retest` on [AppImage catalog PR #8381](https://github.com/AppImage/appimage.github.io/pull/8381).
 
 ## Troubleshooting: Release exists but only has "Source code" assets
