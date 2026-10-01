@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import signal
 import sqlite3
 import subprocess
 import time
@@ -35,9 +36,12 @@ def main():
     parser.add_argument("--fixture", type=Path, required=True)
     parser.add_argument("--config-dir", type=Path, required=True)
     parser.add_argument("--report", type=Path, required=True)
+    parser.add_argument("--trace", type=Path, help="Linux-only syscall diagnostics in hosted QA")
     parser.add_argument("--windows-vm-recovery-snapshot", type=UUID,
                         help="Explicitly permit a fresh profile in a snapshotted local Windows QA VM")
     args = parser.parse_args()
+    if args.trace:
+        assert os.sys.platform.startswith('linux') and os.environ.get('GITHUB_ACTIONS') == 'true'
     assert args.config_dir.name in ("com.amberize.app", "com.amberize.qa")
     if args.config_dir.name == "com.amberize.app":
         assert (os.environ.get("GITHUB_ACTIONS") == "true" or
@@ -62,8 +66,12 @@ def main():
         started = None if missing else event_count(fixture, "app_started")
         verified = None if missing else event_count(fixture, "integrity_check")
         with log.open("ab") as output:
-            process = subprocess.Popen([args.binary, "--background"], env=environment,
-                                       stdout=output, stderr=subprocess.STDOUT)
+            command = [args.binary, "--background"]
+            if args.trace:
+                command = ['strace', '-f', '-e', 'trace=openat,flock,fcntl', '-o', str(args.trace), *command]
+            process = subprocess.Popen(command, env=environment,
+                                       stdout=output, stderr=subprocess.STDOUT,
+                                       start_new_session=os.name != 'nt')
             try:
                 deadline = time.monotonic() + (5 if missing else 45)
                 while time.monotonic() < deadline:
@@ -84,12 +92,23 @@ def main():
                     assert fingerprint(fixture) == baseline, "Archive contents changed"
                 stages.append(label)
             finally:
-                process.terminate()
+                if os.name == 'nt':
+                    process.terminate()
+                else:
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
                 try:
                     process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=10)
+                if os.name != 'nt':
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
     try:
         boot("installed release restored and verified saved archive without a window")

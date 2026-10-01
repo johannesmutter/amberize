@@ -45,7 +45,7 @@ jobs:
       - name: Install extraction and display tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y squashfs-tools xvfb
+          sudo apt-get install -y squashfs-tools xvfb strace
           chmod +x "$RUNNER_TEMP/amberize-qa/packages/Amberize_0.2.5_amd64.AppImage"
       - name: Check the stored modes and library requirements
         run: |
@@ -73,14 +73,13 @@ jobs:
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/amberize-runtime"
           binary=$(command -v Amberize || command -v amberize)
           xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/deb-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
-          xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
           cargo run -p email_archiver_storage --release --example qa_fixture --locked -- verify "$RUNNER_TEMP/amberize-qa/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/after.json"
       - name: Execute the root-owned package as a separate user
         run: |
           set -euo pipefail
           qa_root=$(mktemp -d /tmp/amberize-appimage-user-XXXXXX)
           preserve_and_clean() {
-            for suffix in json log; do
+            for suffix in json log trace; do
               if [ -f "$qa_root/home/unrelated-user.$suffix" ]; then
                 cp "$qa_root/home/unrelated-user.$suffix" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.$suffix"
               fi
@@ -106,7 +105,8 @@ jobs:
           sudo -u amberize-qa-user env HOME="$qa_root/home" GITHUB_ACTIONS=true XDG_RUNTIME_DIR="$qa_root/home/runtime" \
             xvfb-run -a dbus-run-session -- python3 "$qa_root/harness.py" \
             --binary "$qa_root/app/AppRun" --fixture "$qa_root/home/archive.sqlite3" \
-            --config-dir "$qa_root/home/profile/com.amberize.app" --report "$qa_root/home/unrelated-user.json"
+            --config-dir "$qa_root/home/profile/com.amberize.app" --report "$qa_root/home/unrelated-user.json" \
+            --trace "$qa_root/home/unrelated-user.trace"
           sudo -u amberize-qa-user "$qa_root/verify-fixture" verify "$qa_root/home/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/unrelated-user-after.json"
           cp "$qa_root/home/unrelated-user.json" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.json"
           cp "$qa_root/home/unrelated-user.log" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.log"
@@ -128,6 +128,12 @@ jobs:
           report.write_text(json.dumps(result,indent=2)+'\n')
           print(json.dumps(result))
           PY
+      - name: Verify AppImage recovery as the build user
+        run: |
+          set -euo pipefail
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/amberize-runtime"
+          xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json" --trace "$RUNNER_TEMP/amberize-qa/appimage-native.trace"
+          cargo run -p email_archiver_storage --release --example qa_fixture --locked -- verify "$RUNNER_TEMP/amberize-qa/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/after.json"
       - name: Upload exact package evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -136,4 +142,5 @@ jobs:
           path: |
             ${{ runner.temp }}/amberize-qa/*.json
             ${{ runner.temp }}/amberize-qa/*.log
+            ${{ runner.temp }}/amberize-qa/*.trace
           if-no-files-found: error
