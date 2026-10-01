@@ -437,17 +437,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir "$RUNNER_TEMP/amberize-reboot-inputs"
-          gh release view v0.2.4-6 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-reboot-inputs/candidate.json"
-          gh release download v0.2.4-6 --pattern Amberize_0.2.4-6_amd64.deb --dir "$RUNNER_TEMP/amberize-reboot-inputs"
+          gh release view v0.2.4-7 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-reboot-inputs/candidate.json"
+          gh release download v0.2.4-7 --pattern Amberize_0.2.4-6_amd64.deb --dir "$RUNNER_TEMP/amberize-reboot-inputs"
           curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o "$RUNNER_TEMP/amberize-reboot-inputs/ubuntu.img"
           curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/SHA256SUMS -o "$RUNNER_TEMP/amberize-reboot-inputs/SHA256SUMS"
           python3 - <<'PY'
           import hashlib,json,os,pathlib
           root=pathlib.Path(os.environ['RUNNER_TEMP'])/'amberize-reboot-inputs'
           release=json.loads((root/'candidate.json').read_text())
-          assert release['isDraft'] and release['isPrerelease'] and release['tagName']=='v0.2.4-6'
-          assert release['targetCommitish']=='676f4736adb877cd29cb413c40e3c2ff908c1523'
-          assert hashlib.sha256((root/'Amberize_0.2.4-6_amd64.deb').read_bytes()).hexdigest()=='b7489b302de8ebf34fa1e7bb5a58f98833caae7c78f3af4af59dd954b3298092'
+          assert release['isDraft'] and release['isPrerelease'] and release['tagName']=='v0.2.4-7'
+          assert release['targetCommitish']=='bcdb730817eae47a9d6b615a9182c1dbdcb900f7'
+          assert hashlib.sha256((root/'Amberize_0.2.4-6_amd64.deb').read_bytes()).hexdigest()=='7aec25e571135eccb4b874d2c7075705edb0bd739921c8700e4ed0ee042a628d'
           expected=[line.split()[0] for line in (root/'SHA256SUMS').read_text().splitlines() if line.split()[-1].lstrip('*')=='noble-server-cloudimg-amd64.img']
           assert len(expected)==1
           with (root/'ubuntu.img').open('rb') as image:
@@ -466,7 +466,7 @@ jobs:
             --image "$RUNNER_TEMP/amberize-reboot-inputs/ubuntu.img" \
             --package "$RUNNER_TEMP/amberize-reboot-inputs/Amberize_0.2.4-6_amd64.deb" \
             --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
-            --package-sha256 b7489b302de8ebf34fa1e7bb5a58f98833caae7c78f3af4af59dd954b3298092
+            --package-sha256 7aec25e571135eccb4b874d2c7075705edb0bd739921c8700e4ed0ee042a628d
       - name: Upload reboot and desktop-login evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
