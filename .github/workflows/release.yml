@@ -438,7 +438,7 @@ jobs:
           set -euo pipefail
           mkdir "$RUNNER_TEMP/amberize-reboot-inputs"
           gh release view v0.2.4-7 --json tagName,isDraft,isPrerelease,targetCommitish > "$RUNNER_TEMP/amberize-reboot-inputs/candidate.json"
-          gh release download v0.2.4-7 --pattern Amberize_0.2.4-6_amd64.deb --dir "$RUNNER_TEMP/amberize-reboot-inputs"
+          gh release download v0.2.4-7 --pattern Amberize_0.2.4-7_amd64.deb --dir "$RUNNER_TEMP/amberize-reboot-inputs"
           curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img -o "$RUNNER_TEMP/amberize-reboot-inputs/ubuntu.img"
           curl -fL --retry 3 https://cloud-images.ubuntu.com/noble/current/SHA256SUMS -o "$RUNNER_TEMP/amberize-reboot-inputs/SHA256SUMS"
           python3 - <<'PY'
@@ -447,7 +447,7 @@ jobs:
           release=json.loads((root/'candidate.json').read_text())
           assert release['isDraft'] and release['isPrerelease'] and release['tagName']=='v0.2.4-7'
           assert release['targetCommitish']=='bcdb730817eae47a9d6b615a9182c1dbdcb900f7'
-          assert hashlib.sha256((root/'Amberize_0.2.4-6_amd64.deb').read_bytes()).hexdigest()=='7aec25e571135eccb4b874d2c7075705edb0bd739921c8700e4ed0ee042a628d'
+          assert hashlib.sha256((root/'Amberize_0.2.4-7_amd64.deb').read_bytes()).hexdigest()=='7aec25e571135eccb4b874d2c7075705edb0bd739921c8700e4ed0ee042a628d'
           expected=[line.split()[0] for line in (root/'SHA256SUMS').read_text().splitlines() if line.split()[-1].lstrip('*')=='noble-server-cloudimg-amd64.img']
           assert len(expected)==1
           with (root/'ubuntu.img').open('rb') as image:
@@ -464,7 +464,7 @@ jobs:
           python3 scripts/linux_reboot_qa.py \
             --root "$RUNNER_TEMP/amberize-reboot-vm" \
             --image "$RUNNER_TEMP/amberize-reboot-inputs/ubuntu.img" \
-            --package "$RUNNER_TEMP/amberize-reboot-inputs/Amberize_0.2.4-6_amd64.deb" \
+            --package "$RUNNER_TEMP/amberize-reboot-inputs/Amberize_0.2.4-7_amd64.deb" \
             --fixture-tool "$GITHUB_WORKSPACE/target/release/examples/qa_fixture" \
             --package-sha256 7aec25e571135eccb4b874d2c7075705edb0bd739921c8700e4ed0ee042a628d
       - name: Upload reboot and desktop-login evidence
