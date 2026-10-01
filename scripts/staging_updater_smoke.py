@@ -16,9 +16,9 @@ import time
 
 from native_release_smoke import fingerprint, event_count
 
-VERSION = "0.2.4-8"
+VERSION = "0.2.4-9"
 PORT = 18743
-CANDIDATE_COMMIT = "b455497f7a2ffed210008a5dd6375b7cf67cedc4"
+CANDIDATE_COMMIT = "9efb01e4e804663b0d9f880fd0d558eed0a29ca1"
 
 
 def sha256(path):
