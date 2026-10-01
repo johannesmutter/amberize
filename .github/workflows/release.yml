@@ -207,7 +207,7 @@ jobs:
           fi
           cargo run -p email_archiver_storage --release --target "${{ matrix.target }}" --example qa_fixture --locked -- create "$RUNNER_TEMP/amberize-qa/archive.sqlite3" 1024 > "$RUNNER_TEMP/amberize-qa/before.json"
           if [ "${{ runner.os }}" = Linux ]; then
-            sudo apt-get install -y xvfb
+            sudo apt-get install -y xvfb strace
             sudo dpkg -i target/${{ matrix.target }}/release/bundle/deb/*.deb
             mkdir -m 700 "$RUNNER_TEMP/amberize-runtime"
             export XDG_RUNTIME_DIR="$RUNNER_TEMP/amberize-runtime"
@@ -216,7 +216,7 @@ jobs:
             appimage=$(find "target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -print -quit)
             mkdir "$RUNNER_TEMP/amberize-appimage"
             python3 scripts/extract_appimage.py "$appimage" "$RUNNER_TEMP/amberize-appimage/squashfs-root" > /dev/null
-            xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
+            xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json" --trace "$RUNNER_TEMP/amberize-qa/appimage-native.trace"
           elif [ "${{ runner.os }}" = Windows ]; then
             powershell -NoProfile -File scripts/install_windows_qa.ps1
           else
@@ -232,7 +232,7 @@ jobs:
           set -euo pipefail
           qa_root=$(mktemp -d /tmp/amberize-appimage-user-XXXXXX)
           preserve_and_clean() {
-            for suffix in json log; do
+            for suffix in json log trace; do
               if [ -f "$qa_root/home/unrelated-user.$suffix" ]; then
                 cp "$qa_root/home/unrelated-user.$suffix" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.$suffix"
               fi
@@ -248,6 +248,7 @@ jobs:
           sudo useradd --no-create-home --home-dir "$qa_root/home" --shell /bin/bash amberize-qa-user
           mkdir -m 700 "$qa_root/home/runtime"
           cp scripts/native_release_smoke.py "$qa_root/harness.py"
+          cp "target/${{ matrix.target }}/release/examples/qa_fixture" "$qa_root/verify-fixture"
           python3 - "$RUNNER_TEMP/amberize-qa/archive.sqlite3" "$qa_root/home/archive.sqlite3" <<'PY'
           import sqlite3,sys
           from contextlib import closing
@@ -258,7 +259,9 @@ jobs:
           sudo -u amberize-qa-user env HOME="$qa_root/home" GITHUB_ACTIONS=true XDG_RUNTIME_DIR="$qa_root/home/runtime" \
             xvfb-run -a dbus-run-session -- python3 "$qa_root/harness.py" \
             --binary "$qa_root/app/AppRun" --fixture "$qa_root/home/archive.sqlite3" \
-            --config-dir "$qa_root/home/profile/com.amberize.app" --report "$qa_root/home/unrelated-user.json"
+            --config-dir "$qa_root/home/profile/com.amberize.app" --report "$qa_root/home/unrelated-user.json" \
+            --trace "$qa_root/home/unrelated-user.trace"
+          sudo -u amberize-qa-user "$qa_root/verify-fixture" verify "$qa_root/home/archive.sqlite3" > "$RUNNER_TEMP/amberize-qa/unrelated-user-after.json"
           cp "$qa_root/home/unrelated-user.json" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.json"
           cp "$qa_root/home/unrelated-user.log" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.log"
           python3 - "$qa_root/app" "$RUNNER_TEMP/amberize-qa/appimage-permissions.json" <<'PY'
@@ -266,10 +269,14 @@ jobs:
           from pathlib import Path
           report = Path(sys.argv[2])
           result = json.loads(report.read_text())
+          before = json.loads((report.parent/'before.json').read_text())
+          after = json.loads((report.parent/'unrelated-user-after.json').read_text())
+          assert after['integrity']['ok'] and after['mime_hashes'] == before['mime_hashes']
+          assert after['proof']['message_blobs_count'] == before['proof']['message_blobs_count'] == 1024
           launcher = (Path(sys.argv[1]) / 'AppRun.wrapped').stat()
           uid = pwd.getpwnam('amberize-qa-user').pw_uid
           assert launcher.st_uid == 0 and uid != 0
-          result.update(launcher_owner_uid=launcher.st_uid, execution_uid=uid, native_recovery_passed=True)
+          result.update(launcher_owner_uid=launcher.st_uid, execution_uid=uid, native_recovery_passed=True, full_integrity_passed=True, all_1024_hashes_preserved=True)
           report.write_text(json.dumps(result, indent=2) + '\n')
           print(json.dumps(result))
           PY
