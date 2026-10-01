@@ -209,12 +209,14 @@ jobs:
           if [ "${{ runner.os }}" = Linux ]; then
             sudo apt-get install -y xvfb
             sudo dpkg -i target/${{ matrix.target }}/release/bundle/deb/*.deb
+            mkdir -m 700 "$RUNNER_TEMP/amberize-runtime"
+            export XDG_RUNTIME_DIR="$RUNNER_TEMP/amberize-runtime"
             binary=$(command -v Amberize || command -v amberize)
-            dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
+            xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$binary" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/native.json"
             appimage=$(find "target/${{ matrix.target }}/release/bundle/appimage" -name '*.AppImage' -print -quit)
             mkdir "$RUNNER_TEMP/amberize-appimage"
             python3 scripts/extract_appimage.py "$appimage" "$RUNNER_TEMP/amberize-appimage/squashfs-root" > /dev/null
-            dbus-run-session -- xvfb-run -a python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
+            xvfb-run -a dbus-run-session -- python3 scripts/native_release_smoke.py --binary "$RUNNER_TEMP/amberize-appimage/squashfs-root/AppRun" --fixture "$RUNNER_TEMP/amberize-qa/archive.sqlite3" --config-dir "$RUNNER_TEMP/amberize-appimage-profile/com.amberize.app" --report "$RUNNER_TEMP/amberize-qa/appimage-native.json"
           elif [ "${{ runner.os }}" = Windows ]; then
             powershell -NoProfile -File scripts/install_windows_qa.ps1
           else
@@ -244,6 +246,7 @@ jobs:
           python3 scripts/verify_appimage_permissions.py "$qa_root/app" --max-glibc 2.35 > "$RUNNER_TEMP/amberize-qa/appimage-permissions.json"
           mkdir "$qa_root/home"
           sudo useradd --no-create-home --home-dir "$qa_root/home" --shell /bin/bash amberize-qa-user
+          mkdir -m 700 "$qa_root/home/runtime"
           cp scripts/native_release_smoke.py "$qa_root/harness.py"
           python3 - "$RUNNER_TEMP/amberize-qa/archive.sqlite3" "$qa_root/home/archive.sqlite3" <<'PY'
           import sqlite3,sys
@@ -252,8 +255,8 @@ jobs:
               source.backup(destination)
           PY
           sudo chown -R amberize-qa-user:amberize-qa-user "$qa_root/home"
-          sudo -u amberize-qa-user env HOME="$qa_root/home" GITHUB_ACTIONS=true \
-            dbus-run-session -- xvfb-run -a python3 "$qa_root/harness.py" \
+          sudo -u amberize-qa-user env HOME="$qa_root/home" GITHUB_ACTIONS=true XDG_RUNTIME_DIR="$qa_root/home/runtime" \
+            xvfb-run -a dbus-run-session -- python3 "$qa_root/harness.py" \
             --binary "$qa_root/app/AppRun" --fixture "$qa_root/home/archive.sqlite3" \
             --config-dir "$qa_root/home/profile/com.amberize.app" --report "$qa_root/home/unrelated-user.json"
           cp "$qa_root/home/unrelated-user.json" "$RUNNER_TEMP/amberize-qa/appimage-unrelated-user.json"
