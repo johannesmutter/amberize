@@ -34,9 +34,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse 'v0.2.4-7^{}')" = bcdb730817eae47a9d6b615a9182c1dbdcb900f7
+          test "$(git rev-parse 'v0.2.4-8^{}')" = b455497f7a2ffed210008a5dd6375b7cf67cedc4
           mkdir "$RUNNER_TEMP/amberize-provider-source"
-          git archive v0.2.4-7 | tar -x -C "$RUNNER_TEMP/amberize-provider-source"
+          git archive v0.2.4-8 | tar -x -C "$RUNNER_TEMP/amberize-provider-source"
           cp scripts/provider_sync_driver.rs "$RUNNER_TEMP/amberize-provider-source/crates/adapters/examples/provider_sync_qa.rs"
           CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" cargo build --manifest-path "$RUNNER_TEMP/amberize-provider-source/Cargo.toml" -p email_archiver_adapters --example provider_sync_qa --release --locked
       - name: Test trusted TLS, interruptions, oversized mail, UID changes, stalls and reconnect

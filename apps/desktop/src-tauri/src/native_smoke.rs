@@ -38,6 +38,11 @@ pub fn start(app: AppHandle) {
                 return Err("Background startup created a webview".into());
             }
             stages.push("backend restored archive without a webview");
+            let sync_guard = if std::env::var_os("AMBERIZE_TEST_RESTORE_DURING_SYNC").is_some() {
+                Some(state.sync_lock.lock().await)
+            } else {
+                None
+            };
             let handle = app.clone();
             app.run_on_main_thread(move || crate::menubar::show_main_window(&handle))
                 .map_err(|e| e.to_string())?;
@@ -85,6 +90,15 @@ pub fn start(app: AppHandle) {
                 return Err("Recreated webview did not register its listeners".into());
             }
             stages.push("recreated webview ready");
+            if sync_guard.is_some() {
+                if state.sync_lock.try_lock().is_ok() {
+                    return Err("Sync lock was not held across window restoration".into());
+                }
+                stages.push(
+                    "both webviews restored the active archive while sync lock remained held",
+                );
+            }
+            drop(sync_guard);
             Ok::<_, String>(())
         }
         .await;
