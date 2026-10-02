@@ -34,6 +34,7 @@ DESKTOP
   information="gh-releases-zsync|johannesmutter|amberize|$channel|Amberize_*_amd64.AppImage.zsync"
   UPDATE_INFORMATION="$information" OUTPUT="$appimage" ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 \
     "$qa_root/linuxdeploy-x86_64.AppImage" --appimage-extract-and-run --appdir "$appdir" --output appimage
+  zsyncmake -u "$(basename "$appimage")" -o "$appimage.zsync" "$appimage"
   python3 "$repository_root/scripts/verify_appimage_update.py" "$appimage" --expected-update-information "$information"
   # The runtime and read-only ELF verifier must agree about what was embedded.
   test "$("$appimage" --appimage-updateinformation)" = "$information"

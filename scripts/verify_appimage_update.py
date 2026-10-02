@@ -89,7 +89,8 @@ def verify(package, expected_information):
                         '-o', str(regenerated), str(package)],
                        check=True, capture_output=True, timeout=120)
         reference_headers, reference_table = read_zsync(regenerated)
-    if (headers.get('Hash-Lengths') != reference_headers.get('Hash-Lengths')
+    if (headers.get('zsync') != reference_headers.get('zsync')
+            or headers.get('Hash-Lengths') != reference_headers.get('Hash-Lengths')
             or not table or table != reference_table):
         raise ValueError('zsync checksum table does not match the AppImage')
     return {'passed': True, 'appimage': package.name, 'zsync': sidecar.name,

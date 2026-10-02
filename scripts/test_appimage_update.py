@@ -149,6 +149,13 @@ class SidecarTests(FixtureTests):
             with self.assertRaisesRegex(ValueError, 'checksum table does not match'):
                 verify(self.package, STABLE)
 
+    def test_wrong_control_version_or_hash_lengths_is_rejected(self):
+        for key, value in (('zsync', '99.0'), ('Hash-Lengths', '1,1,1')):
+            self.make_sidecar()
+            self.change_header(key, value)
+            with self.assertRaisesRegex(ValueError, 'checksum table does not match'):
+                verify(self.package, STABLE)
+
     def test_duplicate_control_header_is_rejected(self):
         self.sidecar.write_bytes(b'Length: 1\n' + self.sidecar.read_bytes())
         with self.assertRaisesRegex(ValueError, 'duplicate zsync header'):

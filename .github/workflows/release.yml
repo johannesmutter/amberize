@@ -149,6 +149,9 @@ jobs:
           extraction_dir=$(mktemp -d)
           trap 'rm -rf "$extraction_dir"' EXIT
           for appimage in "${appimages[@]}"; do
+            # appimagetool writes its sidecar in the bundler's working directory.
+            # Generate at an explicit upload path from the final, signed payload.
+            zsyncmake -u "$(basename "$appimage")" -o "$appimage.zsync" "$appimage"
             python3 scripts/verify_appimage_update.py "$appimage" --expected-update-information "$UPDATE_INFORMATION"
             (
               cd "$extraction_dir"
