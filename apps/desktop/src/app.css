@@ -389,3 +389,16 @@ input[type="checkbox"] {
   background: var(--color-accent-soft);
   color: var(--color-text);
 }
+/* Shared, visible feedback for archive activation and bounded page reads. */
+.loading-spinner {
+  display: inline-block;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: archive-loading-spin 0.9s linear infinite;
+}
+@keyframes archive-loading-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .loading-spinner { animation: none; } }

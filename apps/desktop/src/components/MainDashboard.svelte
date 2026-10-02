@@ -5,6 +5,7 @@
   import MessagePreview from './MessagePreview.svelte';
   import StatusBar from './StatusBar.svelte';
   import EmptyState from './EmptyState.svelte';
+  import ArchiveLoading from './ArchiveLoading.svelte';
 
   let { db_path, on_open_settings, dashboard_action_nonce = 0, dashboard_action_type = '' } = $props();
 
@@ -23,6 +24,14 @@
   // Accounts
   /** @type {any[]} */
   let accounts = $state([]);
+  let accounts_loading = $state(true);
+  let accounts_error = $state('');
+  let accounts_generation = 0;
+  let stats_generation = 0;
+  let stats_loading = $state(true);
+  let stats_error = $state(false);
+  let messages_loaded = $state(false);
+  let sync_disabled = $derived(accounts_loading || !!accounts_error || !accounts.some(account => !account.disabled));
 
   // Search and filters
   let search_query = $state('');
@@ -102,6 +111,8 @@
   let container_element = $state(null);
   let search_input_element = $state(null);
   let search_debounce_timeout = null;
+  let previous_search_query = '';
+  let sync_status_generation = 0;
   let hidden_state_needs_reload = $state(false);
 
   function clear_preview_state() {
@@ -113,6 +124,8 @@
 
   function clear_hidden_window_state() {
     window_visible = false; sync_progress = null;
+    accounts_generation++; stats_generation++; sync_status_generation++;
+    accounts_loading = true; stats_loading = true; messages_loaded = false;
     clear_preview_state();
 
     // Reset list-heavy state so hidden-to-tray mode does not retain large arrays.
@@ -129,12 +142,17 @@
     hidden_state_needs_reload = true;
   }
 
-  // Load accounts, sync status, and archive stats on mount.
+  // Changing archives invalidates every pending read from the previous file.
   $effect(() => {
+    db_path;
     untrack(() => {
+      accounts = []; accounts_error = ''; load_error = '';
+      clear_preview_state(); messages = []; messages_loaded = false;
+      message_list_generation++; message_list_loading = false; message_list_loading_more = false;
+      message_list_pending_reset = false;
+      filter_account = null;
       void load_accounts();
       void load_sync_status();
-      void load_archive_stats();
     });
   });
 
@@ -142,6 +160,7 @@
   $effect(() => {
     // Read filter_account to create the reactive dependency.
     filter_account;
+    db_path;
     untrack(() => {
       void load_archive_stats();
     });
@@ -178,6 +197,7 @@
   $effect(() => {
     // Track only non-search filter dependencies for immediate refresh.
     const _ = [
+      db_path,
       filter_account,
       filter_date,
       custom_range_start,
@@ -193,7 +213,11 @@
 
   // Debounce search-triggered reloads so we don't query on every keystroke.
   $effect(() => {
-    search_query;
+    const query = search_query;
+    // Mount/filter effects already fetch the initial page. Avoid a second
+    // initial read after 400ms, especially while the first request is slow.
+    if (query === previous_search_query) return;
+    previous_search_query = query;
     if (viewing_selection) return;
 
     if (search_debounce_timeout) {
@@ -215,33 +239,48 @@
 
   async function load_accounts() {
     if (!window_visible || !db_path?.trim()) return;
+    const generation = ++accounts_generation;
+    const path = db_path;
+    accounts_loading = true;
     try {
-      const all_accounts = await tauri_invoke('list_accounts', { dbPath: db_path });
-      if (window_visible) accounts = all_accounts;
-    } catch (err) { load_error = String(err); }
+      const all_accounts = await tauri_invoke('list_accounts', { dbPath: path });
+      if (generation !== accounts_generation || !window_visible || disposed || path !== db_path) return;
+      if (!Array.isArray(all_accounts)) throw new Error('The archive returned an invalid account list. Retry loading it.');
+      accounts = all_accounts; accounts_error = '';
+    } catch (err) {
+      if (generation === accounts_generation && window_visible && !disposed && path === db_path) accounts_error = err instanceof Error ? err.message : String(err);
+    } finally {
+      if (generation === accounts_generation && window_visible && !disposed && path === db_path) accounts_loading = false;
+    }
   }
 
   async function load_archive_stats() {
     if (!window_visible || !db_path?.trim()) return;
+    const generation = ++stats_generation;
+    const path = db_path;
+    stats_loading = true; stats_error = false;
     try {
       const account_id = filter_account ? Number(filter_account) : null;
       const stats = await tauri_invoke('get_archive_stats', {
-        dbPath: db_path,
+        dbPath: path,
         accountId: (account_id && !isNaN(account_id)) ? account_id : null,
       });
-      if (!window_visible) return;
+      if (generation !== stats_generation || !window_visible || disposed || path !== db_path) return;
       if (stats && typeof stats === 'object') {
         archive_total_messages = stats.account_messages ?? stats.total_messages ?? 0;
         archive_db_size_bytes = stats.db_size_bytes ?? 0;
       }
-      const date_range = await tauri_invoke('get_archive_date_range', { dbPath: db_path });
-      if (!window_visible) return;
+      const date_range = await tauri_invoke('get_archive_date_range', { dbPath: path });
+      if (generation !== stats_generation || !window_visible || disposed || path !== db_path) return;
       archive_oldest_date = date_range?.oldest_date ?? null;
       archive_newest_date = date_range?.newest_date ?? null;
     } catch {
-      // ignore — stats are informational only
+      if (generation !== stats_generation || !window_visible || disposed || path !== db_path) return;
+      stats_error = true;
       archive_oldest_date = null;
       archive_newest_date = null;
+    } finally {
+      if (generation === stats_generation && window_visible && !disposed && path === db_path) stats_loading = false;
     }
   }
 
@@ -254,16 +293,18 @@
       return;
     }
     if (action_type === 'sync_now') {
-      void handle_sync();
+      untrack(() => void handle_sync());
     }
   });
 
   async function load_sync_status() {
     if (!window_visible || !db_path?.trim()) return;
+    const generation = ++sync_status_generation;
+    const path = db_path;
     try {
       const status = await tauri_invoke('get_sync_status');
       if (status && typeof status === 'object') {
-        if (!window_visible) return;
+        if (generation !== sync_status_generation || !window_visible || disposed || path !== db_path) return;
         const outcome = status.last_sync_status?.split(' — ')[0]?.toLowerCase() ?? 'never';
         const prev_error = outcome === 'error' || outcome === 'partial' ? (status.error || status.last_sync_status) : null;
         const prev_error_account_id = sync_status.error_account_id;
@@ -357,13 +398,14 @@
       const fetched_count = Array.isArray(results) ? results.length : 0;
 
       // Discard response if a newer request has been issued (race condition guard).
-      if (current_generation !== message_list_generation) return;
+      if (current_generation !== message_list_generation || !window_visible || disposed) return;
 
       if (!Array.isArray(results)) {
         results = [];
       }
 
       load_error = '';
+      messages_loaded = true;
       const existing_ids = new Set(messages.map(m => m.id));
       const unique_results = results.filter(m => !existing_ids.has(m.id));
       const next_messages = previous ? [...unique_results, ...messages] : [...messages, ...unique_results];
@@ -388,6 +430,7 @@
       }
       message_list_has_more = false;
     } finally {
+      if (current_generation !== message_list_generation || !window_visible || disposed) return;
       message_list_loading = false;
       message_list_loading_more = false;
 
@@ -608,7 +651,7 @@
   async function handle_sync() {
     if (!window_visible || !db_path?.trim()) return;
     // Prevent rapid double-clicks from triggering multiple syncs.
-    if (sync_status.syncing) return;
+    if (sync_status.syncing || sync_disabled) return;
 
     sync_status = { ...sync_status, syncing: true, error: null, error_account_id: null };
     sync_progress = null;
@@ -747,6 +790,7 @@
 <svelte:window onmousemove={do_resize} onmouseup={stop_resize} onkeydown={handle_dashboard_keydown} />
 
 <div class="main-dashboard">
+  {#if accounts_error}<p class="load-error" role="alert">Could not load accounts: {accounts_error} <button onclick={() => {void load_accounts();void load_messages(true);void load_archive_stats();}}>Retry loading archive</button></p>{/if}
   {#if load_error}<p role="alert">{load_error} <button onclick={() => {void load_accounts();void load_messages(true);}}>Retry</button></p>{/if}
   {#if export_message}<p role="status">{export_message} {#if export_operation_id}<button disabled={export_cancel_requested} onclick={cancel_bulk_export}>Cancel export</button>{/if}</p>{/if}
   <!-- Top Row: Search + Filters -->
@@ -872,14 +916,20 @@
 
       {#if previous_available && !viewing_selection}<button onclick={() => load_messages(false,true)} disabled={message_list_loading_more}>Load earlier page</button>{/if}
       <!-- Message List -->
-      {#if accounts.length === 0}
+      {#if accounts_loading || (!messages_loaded && message_list_loading)}
+        <ArchiveLoading title={accounts_loading ? 'Loading your archive…' : 'Loading emails…'} />
+      {:else if accounts_error}
+        <EmptyState variant="archive" title="Your accounts could not be loaded" description="Use Retry loading archive above to try again." />
+      {:else if load_error && displayed_messages.length === 0}
+        <EmptyState variant="archive" title="Your emails could not be loaded" description="Use Retry above to try again." />
+      {:else if accounts.length === 0 && displayed_messages.length === 0}
         <EmptyState
           variant="accounts"
           title="No email accounts configured"
           description='Select "Manage accounts" from the account filter above to add one.'
         />
       {:else if message_list_loading}
-        <EmptyState compact={true} variant="inbox" title="Loading emails..." />
+        <ArchiveLoading title="Loading emails…" />
       {:else if displayed_messages.length === 0}
         {#if search_query.trim()}
           {#if search_query.trim().length < MIN_SEARCH_QUERY_LEN}
@@ -952,6 +1002,10 @@
     error={sync_status.error}
     error_account_id={sync_status.error_account_id}
     progress={sync_progress}
+    archive_loading={accounts_loading || message_list_loading}
+    sync_disabled={sync_disabled}
+    stats_loading={stats_loading}
+    stats_error={stats_error}
     total_messages={archive_total_messages}
     db_size_bytes={archive_db_size_bytes}
     oldest_date={archive_oldest_date}
@@ -966,7 +1020,7 @@
     display: flex;
     flex-direction: column;
     height: 100vh;
-    padding-top: var(--titlebar-height);
+    padding-top: calc(var(--titlebar-height) + var(--banner-height, 0px));
     background: var(--color-bg);
   }
 

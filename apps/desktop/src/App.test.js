@@ -57,7 +57,7 @@ describe('App', () => {
   test('native settings-read failure retains recovery messaging and does not use stale browser settings',async()=>{
     window.__TAURI_INTERNALS__={};localStorage.setItem('amberize_config_v1',JSON.stringify({db_path:'/stale-browser.db'}));
     tauri_invoke.mockImplementation(async cmd=>{if(cmd==='get_app_config')throw new Error('Saved settings are damaged');return null;});
-    const ui=render(App);expect(await ui.findByText('Amberize could not restore your archive.')).toBeInTheDocument();expect(ui.getByText('Saved settings are damaged')).toBeInTheDocument();expect(ui.queryByPlaceholderText('Search emails...')).not.toBeInTheDocument();delete window.__TAURI_INTERNALS__;
+    const ui=render(App);expect(await ui.findByRole('heading',{name:'Your archive settings could not be loaded'})).toBeInTheDocument();expect(ui.getByText('Saved settings are damaged')).toBeInTheDocument();expect(ui.queryByPlaceholderText('Search emails...')).not.toBeInTheDocument();delete window.__TAURI_INTERNALS__;
   });
   test('failed archive selection stays in setup and shows the actual save failure',async()=>{
     tauri_save_dialog.mockResolvedValue('/tmp/new.db');tauri_invoke.mockImplementation(async cmd=>{if(cmd==='select_archive')throw new Error('Could not save archive settings: disk full');return null;});
@@ -159,5 +159,82 @@ describe('App', () => {
 
     // Verify dashboard is now shown
     expect(await findByPlaceholderText('Search emails...')).toBeInTheDocument();
+  });
+
+  function missing_archive() {
+    window.__TAURI_INTERNALS__ = {};
+    const config = {db_path:'/disconnected/saved.sqlite3',sync_interval_secs:300};
+    let warning = 'The saved archive is unavailable at /disconnected/saved.sqlite3';
+    tauri_invoke.mockImplementation(async (cmd,args) => {
+      if (cmd === 'get_app_config') return config;
+      if (cmd === 'set_active_db_path') throw new Error(warning);
+      if (cmd === 'get_startup_warning') return warning;
+      if (cmd === 'select_archive') { config.db_path=args.dbPath; warning=''; return {...config}; }
+      if (cmd === 'list_accounts') return [{id:1,email_address:'saved@example.com'}];
+      if (cmd === 'list_messages') return [{id:1,subject:'Saved email',sort_timestamp:1,account_id:1}];
+      if (cmd === 'get_archive_stats') return {total_messages:29562,db_size_bytes:123};
+      return null;
+    });
+    return config;
+  }
+
+  test('choosing a moved archive restores its accounts/messages and removes the old warning',async()=>{
+    missing_archive();tauri_open_dialog.mockResolvedValue('/moved/saved.sqlite3');
+    const ui=render(App);await ui.findByRole('heading',{name:'Your archive is unavailable'});
+    expect(ui.container.querySelector('.update-banner-warning')).toBeNull();
+    await fireEvent.click(ui.getByRole('button',{name:'Choose existing archive'}));
+    await ui.findByText('Saved email');
+    expect(ui.getByRole('option',{name:'saved@example.com'})).toBeInTheDocument();
+    expect(ui.queryByText(/The saved archive is unavailable/)).not.toBeInTheDocument();
+    expect(tauri_invoke).toHaveBeenCalledWith('select_archive',{dbPath:'/moved/saved.sqlite3',create:false});
+    expect(tauri_invoke).toHaveBeenCalledWith('list_accounts',{dbPath:'/moved/saved.sqlite3'});
+  });
+
+  test.each([null,'/wrong/unrelated.db'])('canceling or failing recovery selection keeps the saved location: %s',async selected=>{
+    missing_archive();const base=tauri_invoke.getMockImplementation();
+    tauri_open_dialog.mockResolvedValue(selected);
+    tauri_invoke.mockImplementation((cmd,args)=>cmd==='select_archive'?Promise.reject(new Error('This is not an Amberize archive')):base(cmd,args));
+    const ui=render(App);await ui.findByRole('heading',{name:'Your archive is unavailable'});
+    await fireEvent.click(ui.getByRole('button',{name:'Choose existing archive'}));
+    await waitFor(()=>expect(ui.getByRole('button',{name:'Choose existing archive'})).toBeEnabled());
+    expect(ui.getByText('/disconnected/saved.sqlite3',{selector:'code'})).toBeInTheDocument();
+    expect(ui.queryByPlaceholderText('Search emails...')).not.toBeInTheDocument();
+    if(selected)expect(ui.getByRole('alert')).toHaveTextContent('This is not an Amberize archive');
+    else expect(tauri_invoke.mock.calls.some(([cmd])=>cmd==='select_archive')).toBe(false);
+  });
+
+  test('activation waits before requesting integrity or mounting an empty dashboard',async()=>{
+    window.__TAURI_INTERNALS__={};let complete;
+    const activation=new Promise(resolve=>{complete=resolve;});
+    tauri_invoke.mockImplementation(async cmd=>{
+      if(cmd==='get_app_config')return {db_path:'/saved/archive.db'};
+      if(cmd==='set_active_db_path')return activation;
+      if(cmd==='list_accounts'||cmd==='list_messages')return [];
+      return null;
+    });
+    const ui=render(App);await ui.findByText('Opening your archive…');
+    expect(tauri_invoke.mock.calls.some(([cmd])=>['get_integrity_status','list_accounts','list_messages'].includes(cmd))).toBe(false);
+    complete();await ui.findByPlaceholderText('Search emails...');
+  });
+
+  test('retry opens the remembered archive once its drive is available',async()=>{
+    const config=missing_archive();const base=tauri_invoke.getMockImplementation();let available=false;
+    tauri_invoke.mockImplementation((cmd,args)=>cmd==='set_active_db_path'&&available?Promise.resolve():cmd==='get_startup_warning'&&available?Promise.resolve(null):base(cmd,args));
+    const ui=render(App);await ui.findByRole('heading',{name:'Your archive is unavailable'});available=true;
+    await fireEvent.click(ui.getByRole('button',{name:'Retry saved archive'}));await ui.findByText('Saved email');
+    expect(config.db_path).toBe('/disconnected/saved.sqlite3');
+    expect(tauri_invoke.mock.calls.some(([cmd])=>cmd==='select_archive')).toBe(false);
+  });
+
+  test('dismissed startup warnings stay dismissed on integrity refresh without hiding a new warning',async()=>{
+    localStorage.setItem('amberize_config_v1',JSON.stringify({db_path:'/saved/archive.db'}));
+    const handlers=new Map();tauri_listen.mockImplementation(async(name,handler)=>{handlers.set(name,handler);return()=>{};});
+    let warning='Settings recovered from the previous copy';
+    tauri_invoke.mockImplementation(async cmd=>cmd==='get_startup_warning'?warning:['list_accounts','list_messages'].includes(cmd)?[]:null);
+    const ui=render(App);await ui.findByText(warning);await fireEvent.click(ui.getByRole('button',{name:'Dismiss archive warning'}));
+    expect(tauri_invoke).toHaveBeenCalledWith('dismiss_startup_warning',{warning});
+    await waitFor(()=>expect(handlers.has('integrity_status_updated')).toBe(true));
+    handlers.get('integrity_status_updated')({});await waitFor(()=>expect(ui.queryByText(warning)).not.toBeInTheDocument());
+    warning='A different verification problem';handlers.get('integrity_status_updated')({});expect(await ui.findByText(warning)).toBeInTheDocument();
   });
 });

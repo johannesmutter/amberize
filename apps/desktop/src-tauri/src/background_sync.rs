@@ -214,8 +214,12 @@ pub fn verify_integrity_at_startup(app_handle: &AppHandle) {
     let Some(db_path) = get_active_db_path(app_handle) else {
         return;
     };
-    let result = Storage::open_existing(&db_path).and_then(|storage| {
-        let status = storage.verify_integrity()?;
+    let result = Storage::open_read_only(&db_path).and_then(|reader| {
+        let status = reader.verify_integrity()?;
+        // Only audit-result writes use the shared connection. The full MIME scan
+        // must not hold the mutex used by the dashboard's lightweight reads.
+        drop(reader);
+        let storage = Storage::open_existing(&db_path)?;
         Ok((storage, status))
     });
     let (storage, status) = match result {
@@ -548,7 +552,7 @@ fn run_periodic_integrity_check(app_handle: &AppHandle, run_full_chain: bool) {
     };
     let result = Storage::open_existing(&db_path).and_then(|storage| {
         let status = if run_full_chain {
-            storage.verify_integrity()?
+            Storage::open_read_only(&db_path)?.verify_integrity()?
         } else {
             storage.verify_root_hash_only()?
         };

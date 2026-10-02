@@ -74,9 +74,7 @@ pub fn start(app: AppHandle) {
         })();
         if let Err(error) = result {
             let state = app.state::<AppState>();
-            if let Ok(mut warning) = state.startup_warning.lock() {
-                *warning = Some(error);
-            }
+            state.set_archive_recovery_warning(error);
             state.set_tray_status_text("Archive unavailable — open Amberize to recover");
         }
     });

@@ -779,7 +779,7 @@
   .settings-page {
     display: flex;
     height: 100vh;
-    padding-top: var(--titlebar-height);
+    padding-top: calc(var(--titlebar-height) + var(--banner-height, 0px));
     background: var(--color-bg);
   }
 

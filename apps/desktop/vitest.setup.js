@@ -7,4 +7,4 @@ afterEach(() => {
 });
 
 
-vi.stubGlobal("ResizeObserver", class { observe() {} disconnect() {} });
+vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });

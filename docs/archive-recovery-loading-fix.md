@@ -1,0 +1,13 @@
+# Archive recovery and loading repair
+
+The moved archive report reproduced three defects: recovery content is arranged in one flex row; selecting an existing archive leaves the backend startup warning unchanged; dashboard requests wait behind full verification and present unloaded data as empty. Read-only inspection of the selected archive found 5 accounts and 29,562 message blobs on 2026-10-02.
+
+The repair will retain the saved location until activation succeeds, show a stacked recovery view with a wrapping path and technical details, and allow choosing an existing file directly. Canceling or failing selection will keep recovery available. Successful selection will clear the stale startup warning and wake background sync. Warnings will be dismissible and reserve space above the toolbar.
+
+Dashboard accounts, messages and statistics will have separate loading/error states. Empty archive messaging will appear only after successful reads. Sync will require a loaded, enabled account, including keyboard/menu triggers. Reopening the window will immediately show loading while the bounded first page is fetched.
+
+Full verification will continue to check all integrity scopes, using a separate read-only SQLite connection and one consistent transaction instead of holding the shared browsing connection. Statistics will use counts rather than full diagnostics; date range reads will not block the shared connection. No database copies, local Rust builds, changes to mailbox credentials, or changes to the user's archive contents are needed.
+
+Validation: deferred-response and failure regression tests, moved-file retry/selection/cancel tests, independent-reader concurrency/integrity tests in hosted CI, production frontend build, and browser screenshots in dark/light themes with long paths and slow/reopened loading. All fixtures and simulated UI data are synthetic. Pending reads are invalidated on archive switches and hide/reopen; native sync commands also reject absent or disabled accounts. Recovery clears only the warning associated with the resolved activation failure and does not mark integrity checks successful or erase unrelated warnings.
+
+Implementation checks on 2026-10-02: 59 frontend tests passed, including 13 added recovery/loading regressions; the production frontend build and coverage thresholds passed; Rust formatting and whitespace checks passed. Chromium dark/light visual checks passed at 1800×1400 and 900×600 with long paths, canceled selection, delayed native requests, stacked warnings, dismissal and reopening. WebKit visual checks and hosted Rust checks are recorded after completion. The installed 0.2.7 app and live release have not been replaced by these source changes.

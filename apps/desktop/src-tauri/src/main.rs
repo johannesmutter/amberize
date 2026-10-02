@@ -52,6 +52,7 @@ fn main() {
             app_commands::select_archive,
             app_commands::frontend_ready,
             app_commands::get_startup_warning,
+            app_commands::dismiss_startup_warning,
             app_commands::autostart_is_enabled,
             app_commands::autostart_set_enabled,
             app_commands::restart_app,

@@ -722,9 +722,7 @@ pub async fn set_active_db_path(
         .await
         .map_err(|e| e.to_string())??;
     state.sync_wakeup.notify_one();
-    if let Ok(mut warning) = state.startup_warning.lock() {
-        *warning = None;
-    }
+    state.clear_archive_recovery_warning()?;
     crate::bootstrap::verify_async(app_handle);
     Ok(())
 }
@@ -832,6 +830,15 @@ pub async fn sync_account_once_command(
             "The active archive changed. Retry synchronization from the current archive.".into(),
         );
     }
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+    let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
+    let account = accounts
+        .iter()
+        .find(|a| a.id == account_id)
+        .ok_or_else(|| "This account is no longer in the current archive.".to_string())?;
+    if account.disabled {
+        return Err("This account is archive only. Enable it in Settings before syncing.".into());
+    }
     state.set_sync_in_progress(true);
     state.set_tray_status_text("Status: syncing…");
     let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
@@ -839,12 +846,6 @@ pub async fn sync_account_once_command(
     let on_progress = crate::background_sync::progress_callback(app_handle.clone());
 
     let result = async {
-        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
-        let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
-        let Some(account) = accounts.iter().find(|a| a.id == account_id) else {
-            return Err("account not found".to_string());
-        };
-
         let secret_store = KeychainSecretStore::new();
         sync_account_once_with_progress(&storage, &secret_store, account, Some(&on_progress))
             .await
@@ -932,6 +933,13 @@ pub async fn sync_all_accounts_command(
             "The active archive changed. Retry synchronization from the current archive.".into(),
         );
     }
+    let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+    let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
+    if !accounts.iter().any(|account| !account.disabled) {
+        return Err(
+            "No accounts are enabled for sync. Add or enable an account in Settings.".into(),
+        );
+    }
     state.set_sync_in_progress(true);
     state.set_tray_status_text("Status: syncing…");
     let _ = app_handle.emit(EVENT_SYNC_STATUS_UPDATED, ());
@@ -939,8 +947,6 @@ pub async fn sync_all_accounts_command(
     let on_progress = crate::background_sync::progress_callback(app_handle.clone());
 
     let result: Result<UiAggregateSyncSummary, String> = async {
-        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
-        let accounts = storage.list_accounts().map_err(|e| e.to_string())?;
         let secret_store = KeychainSecretStore::new();
 
         let mut aggregate = UiAggregateSyncSummary {
@@ -1898,10 +1904,8 @@ pub async fn get_archive_stats(
 ) -> Result<ArchiveStats, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let db_path = validate_db_path(&db_path)?;
-        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
-        let diag = storage.diagnose_database().map_err(|e| e.to_string())?;
-
-        let total_messages = diag.message_blobs_count;
+        let storage = Storage::open_read_only(&db_path).map_err(|e| e.to_string())?;
+        let total_messages = storage.count_message_blobs().map_err(|e| e.to_string())?;
 
         let account_messages = match account_id {
             Some(aid) => {
@@ -1931,7 +1935,7 @@ pub async fn get_archive_date_range(
 ) -> Result<email_archiver_storage::ArchiveDateRange, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let db_path = validate_db_path(&db_path)?;
-        let storage = Storage::open_existing(&db_path).map_err(|e| e.to_string())?;
+        let storage = Storage::open_read_only(&db_path).map_err(|e| e.to_string())?;
         storage.get_archive_date_range().map_err(|e| e.to_string())
     })
     .await
@@ -2023,6 +2027,9 @@ pub async fn select_archive(
     crate::bootstrap::activate_with(&app_handle, &config.db_path, || {
         save_app_config(app_handle.clone(), config.clone())
     })?;
+    let state = app_handle.state::<AppState>();
+    state.clear_archive_recovery_warning()?;
+    state.sync_wakeup.notify_one();
     crate::bootstrap::verify_async(app_handle.clone());
     Ok(config)
 }
@@ -2030,6 +2037,16 @@ pub async fn select_archive(
 #[tauri::command]
 pub fn get_startup_warning(state: State<'_, AppState>) -> Option<String> {
     state.startup_warning.lock().ok().and_then(|s| s.clone())
+}
+
+#[tauri::command]
+pub fn dismiss_startup_warning(state: State<'_, AppState>, warning: String) -> Result<(), String> {
+    let mut current = state.startup_warning.lock().map_err(|e| e.to_string())?;
+    // Do not dismiss a newer warning that arrived while the UI request was pending.
+    if current.as_deref() == Some(warning.as_str()) {
+        *current = None;
+    }
+    Ok(())
 }
 
 #[tauri::command]

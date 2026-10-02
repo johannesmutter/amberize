@@ -22,6 +22,7 @@ pub struct AppState {
     pub config_lock: Mutex<()>,
     pub archive_lock: Mutex<Option<std::fs::File>>,
     pub startup_warning: Mutex<Option<String>>,
+    archive_recovery_warning: Mutex<Option<String>>,
     pub sync_wakeup: tokio::sync::Notify,
     pub window_visible: AtomicBool,
     pub frontend_ready: AtomicBool,
@@ -47,6 +48,7 @@ impl Default for AppState {
             config_lock: Mutex::new(()),
             archive_lock: Mutex::new(None),
             startup_warning: Mutex::new(None),
+            archive_recovery_warning: Mutex::new(None),
             sync_wakeup: tokio::sync::Notify::new(),
             window_visible: AtomicBool::new(false),
             frontend_ready: AtomicBool::new(false),
@@ -72,6 +74,29 @@ impl Default for AppState {
 }
 
 impl AppState {
+    pub fn set_archive_recovery_warning(&self, message: String) {
+        if let (Ok(mut warning), Ok(mut recovery)) = (
+            self.startup_warning.lock(),
+            self.archive_recovery_warning.lock(),
+        ) {
+            *recovery = Some(message.clone());
+            *warning = Some(message);
+        }
+    }
+
+    pub fn clear_archive_recovery_warning(&self) -> Result<(), String> {
+        let mut warning = self.startup_warning.lock().map_err(|e| e.to_string())?;
+        let mut recovery = self
+            .archive_recovery_warning
+            .lock()
+            .map_err(|e| e.to_string())?;
+        if recovery.is_some() && *warning == *recovery {
+            *warning = None;
+        }
+        *recovery = None;
+        Ok(())
+    }
+
     pub fn set_sync_in_progress(&self, in_progress: bool) {
         self.sync_in_progress.store(in_progress, Ordering::SeqCst);
     }
@@ -146,6 +171,21 @@ impl UiSyncStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn archive_recovery_clears_only_the_resolved_warning() {
+        let state = AppState::default();
+        state.set_archive_recovery_warning("Archive unavailable".into());
+        state.clear_archive_recovery_warning().unwrap();
+        assert!(state.startup_warning.lock().unwrap().is_none());
+        state.set_archive_recovery_warning("Archive unavailable".into());
+        *state.startup_warning.lock().unwrap() = Some("Verification failed".into());
+        state.clear_archive_recovery_warning().unwrap();
+        assert_eq!(
+            state.startup_warning.lock().unwrap().as_deref(),
+            Some("Verification failed")
+        );
+        assert!(state.integrity_status.lock().unwrap().is_none());
+    }
     #[test]
     fn failure_preserves_last_success_instead_of_reporting_attempt_as_success() {
         let previous = UiSyncStatus {

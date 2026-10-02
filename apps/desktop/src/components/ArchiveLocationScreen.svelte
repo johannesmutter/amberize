@@ -137,7 +137,7 @@
     justify-content: center;
     min-height: 100vh;
     padding: var(--space-2xl);
-    padding-top: calc(var(--titlebar-height) + var(--space-2xl));
+    padding-top: calc(var(--titlebar-height) + var(--banner-height, 0px) + var(--space-2xl));
     background: var(--color-bg);
   }
 

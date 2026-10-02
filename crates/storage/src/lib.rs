@@ -138,7 +138,7 @@ impl Storage {
                 "choose an archive file".into(),
             ));
         }
-        let storage = Self::connect(path, false, true)?;
+        let storage = Self::connect(path, false, true, false)?;
         {
             let mut conn = storage.open_connection()?;
             let version = existing_schema_version(&conn)?;
@@ -150,11 +150,18 @@ impl Storage {
         Ok(storage)
     }
 
+    /// An independent SQLite reader: no migrations, creation, or shared writer mutex.
+    /// Long verification/statistics reads retain their own WAL snapshot while the
+    /// normal connection remains available for browsing and ingestion.
+    pub fn open_read_only(db_path: impl AsRef<Path>) -> StorageResult<Self> {
+        Self::connect(db_path.as_ref(), false, false, true)
+    }
+
     // Retained for migrations/tests. Application operations use open_existing/create_new.
     pub fn open_or_create(db_path: impl AsRef<Path>) -> StorageResult<Self> {
         let path = db_path.as_ref();
         create_parent_dir_if_needed(path)?;
-        let storage = Self::connect(path, true, true)?;
+        let storage = Self::connect(path, true, true, false)?;
         {
             let mut conn = storage.open_connection()?;
             migrate(&mut conn)?;
@@ -162,7 +169,7 @@ impl Storage {
         Ok(storage)
     }
 
-    fn connect(path: &Path, create: bool, cached: bool) -> StorageResult<Self> {
+    fn connect(path: &Path, create: bool, cached: bool, read_only: bool) -> StorageResult<Self> {
         if path.as_os_str() != ":memory:" && cached && path.exists() {
             let identity = file_identity(path)?;
             let mut cache = CONNECTIONS.lock().map_err(|_| StorageError::LockPoisoned)?;
@@ -180,17 +187,21 @@ impl Storage {
         let conn = if path.as_os_str() == ":memory:" {
             Connection::open_in_memory()?
         } else {
-            let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
-                | if create {
-                    OpenFlags::SQLITE_OPEN_CREATE
-                } else {
-                    OpenFlags::empty()
-                };
+            let flags = if read_only {
+                OpenFlags::SQLITE_OPEN_READ_ONLY
+            } else {
+                OpenFlags::SQLITE_OPEN_READ_WRITE
+                    | if create {
+                        OpenFlags::SQLITE_OPEN_CREATE
+                    } else {
+                        OpenFlags::empty()
+                    }
+            };
             Connection::open_with_flags(path, flags)?
         };
         // Reject foreign/empty databases before WAL or other write settings
         // can change them. Validation uses SQLite itself, without raw handles.
-        if !create && cached {
+        if !create && (cached || read_only) {
             existing_schema_version(&conn)?;
         }
         apply_connection_pragmas(&conn, path.as_os_str() != ":memory:" && cached)?;
@@ -273,7 +284,7 @@ impl Storage {
         }
         check()?;
         drop(destination);
-        Self::connect(path, false, false)
+        Self::connect(path, false, false, false)
     }
 
     pub fn db_path(&self) -> &Path {
@@ -1528,6 +1539,12 @@ impl Storage {
         status.root_checked_at = Some(status.checked_at.clone());
         status.ok = false; // Other scopes have not been checked.
         Ok(status)
+    }
+
+    /// Count archived blobs without collecting diagnostics or joining MIME rows.
+    pub fn count_message_blobs(&self) -> StorageResult<u64> {
+        let conn = self.open_connection()?;
+        count_rows(&conn, "message_blobs")
     }
 
     /// Returns the number of active message locations for a specific account.
@@ -4932,6 +4949,64 @@ mod tests {
         status.merge_checked(storage.verify_root_hash_only().unwrap());
         assert!(!status.chain_ok);
         assert!(!status.ok);
+    }
+    #[test]
+    fn independent_reader_keeps_a_snapshot_without_blocking_browsing_or_ingestion() {
+        let (storage, account, mailbox) = setup_test_account_with_inbox();
+        ingest_test_message(&storage, account, mailbox, "before", 1);
+        let reader = Storage::open_read_only(storage.db_path()).unwrap();
+        assert!(!Arc::ptr_eq(&storage.connection, &reader.connection));
+        let mut conn = reader.open_connection().unwrap();
+        let tx = conn.transaction().unwrap();
+        assert_eq!(count_rows(&tx, "message_blobs").unwrap(), 1);
+        // The verification reader holds its connection and snapshot throughout.
+        assert_eq!(storage.list_accounts().unwrap().len(), 1);
+        ingest_test_message(&storage, account, mailbox, "during", 2);
+        assert_eq!(storage.count_message_blobs().unwrap(), 2);
+        assert_eq!(count_rows(&tx, "message_blobs").unwrap(), 1);
+        tx.commit().unwrap();
+        assert!(conn.execute("DELETE FROM message_locations", []).is_err());
+        drop(conn);
+        assert_eq!(reader.count_message_blobs().unwrap(), 2);
+        let expected = storage.verify_integrity().unwrap();
+        let actual = reader.verify_integrity().unwrap();
+        assert_eq!(actual.ok, expected.ok);
+        assert_eq!(actual.issues, expected.issues);
+        assert!(actual.content_checked && actual.chain_checked && actual.schema_checked);
+        storage
+            .open_connection()
+            .unwrap()
+            .execute(
+                "UPDATE message_blobs SET raw_mime=? WHERE id=(SELECT MIN(id) FROM message_blobs)",
+                params![b"tampered contents".as_slice()],
+            )
+            .unwrap();
+        assert!(!reader.verify_integrity().unwrap().content_ok);
+    }
+
+    #[test]
+    fn independent_reader_does_not_create_or_migrate_an_archive() {
+        let missing = test_db_path();
+        assert!(Storage::open_read_only(&missing).is_err());
+        assert!(!missing.exists());
+        let foreign = test_db_path();
+        Connection::open(&foreign)
+            .unwrap()
+            .execute("CREATE TABLE unrelated(value)", [])
+            .unwrap();
+        assert!(Storage::open_read_only(&foreign).is_err());
+        let conn = Connection::open(&foreign).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name='schema_meta'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        drop(conn);
+        std::fs::remove_file(foreign).unwrap();
     }
     #[test]
     fn interrupted_atomic_ingest_is_distinguished_from_unexplained_blob() {

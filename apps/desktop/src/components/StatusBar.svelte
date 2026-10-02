@@ -15,6 +15,10 @@
     error = null,
     error_account_id = null,
     progress = null,
+    archive_loading = false,
+    sync_disabled = false,
+    stats_loading = false,
+    stats_error = false,
     total_messages = 0,
     db_size_bytes = 0,
     oldest_date = null,
@@ -101,7 +105,7 @@
   });
 
   let stats_label = $derived(
-    show_storage
+    stats_loading ? 'Loading archive details…' : stats_error ? 'Archive details unavailable' : show_storage
       ? format_bytes(db_size_bytes)
       : `${format_number(total_messages)} emails`
   );
@@ -164,6 +168,8 @@
           ></div>
         </div>
       </div>
+    {:else if archive_loading}
+      <span class="status-text" role="status">Loading archive…</span>
     {:else}
       <span class="status-text">
         <span class="sync-icon">{outcome === 'ok' ? '✓' : outcome === 'never' ? '–' : '⚠'}</span>
@@ -176,12 +182,13 @@
     type="button"
     class="stats-toggle"
     onclick={toggle_stats_view}
+    disabled={stats_loading || stats_error}
     title={`${show_storage ? 'Show email count' : 'Show storage used'} • ${retention_label}`}
   >
     {stats_label}
   </button>
 
-  <span class="retention-text" title="Informational retention window from archived message dates">
+  <span class="retention-text" hidden={stats_loading || stats_error} title="Informational retention window from archived message dates">
     {retention_label}
   </span>
 
@@ -189,7 +196,7 @@
     type="button"
     class="sync-button"
     onclick={on_sync}
-    disabled={syncing}
+    disabled={syncing || sync_disabled}
   >
     Sync Now
   </button>

@@ -26,6 +26,65 @@ beforeEach(() => {
   });
 });
 describe('archive reliability', () => {
+  test('slow archive reads show loading instead of empty accounts, emails, or zero statistics',async()=>{
+    const accounts=deferred(), messages=deferred(), stats=deferred();const base=invoke.getMockImplementation();
+    invoke.mockImplementation((cmd,args)=>cmd==='list_accounts'?accounts.promise:cmd==='list_messages'?messages.promise:cmd==='get_archive_stats'?stats.promise:base(cmd,args));
+    const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});
+    expect(await ui.findByText('Loading your archive…')).toBeInTheDocument();
+    expect(ui.getByRole('button',{name:'Sync Now'})).toBeDisabled();
+    expect(ui.queryByText('No email accounts configured')).not.toBeInTheDocument();
+    expect(ui.queryByText('No archived emails yet')).not.toBeInTheDocument();
+    expect(ui.queryByText('0 emails')).not.toBeInTheDocument();
+    accounts.resolve([{id:1,email_address:'saved@example.com'}]);
+    await ui.findByText('Loading emails…');messages.resolve(rows());await ui.findByText('Subject 1');
+    expect(ui.getByRole('button',{name:'Sync Now'})).toBeEnabled();
+    stats.resolve({total_messages:29562});await ui.findByRole('button',{name:/29,562 emails/});
+  });
+
+  test('successful message reads cannot erase an account-read failure',async()=>{
+    const messages=deferred();const base=invoke.getMockImplementation();
+    invoke.mockImplementation((cmd,args)=>cmd==='list_accounts'?Promise.reject(new Error('Archive drive unavailable')):cmd==='list_messages'?messages.promise:base(cmd,args));
+    const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});await ui.findByRole('alert');
+    messages.resolve([]);await ui.findByText('Your accounts could not be loaded');
+    expect(ui.getByRole('alert')).toHaveTextContent('Archive drive unavailable');
+    expect(ui.queryByText('No email accounts configured')).not.toBeInTheDocument();
+    expect(ui.getByRole('button',{name:'Sync Now'})).toBeDisabled();
+  });
+
+  test.each([{accounts:[]},{accounts:[{id:1,email_address:'archive@example.com',disabled:true}]}])('sync button and menu shortcut require an enabled loaded account: %j',async ({accounts})=>{
+    const base=invoke.getMockImplementation();invoke.mockImplementation((cmd,args)=>cmd==='list_accounts'?Promise.resolve(accounts):base(cmd,args));
+    const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});await ui.findByText('Subject 1');
+    expect(ui.getByRole('button',{name:'Sync Now'})).toBeDisabled();
+    await ui.rerender({db_path:'/tmp/archive.db',dashboard_action_nonce:1,dashboard_action_type:'sync_now'});
+    expect(invoke.mock.calls.some(([cmd])=>cmd==='sync_all_accounts_command')).toBe(false);
+  });
+
+  test('reopening shows loading immediately and ignores an older pending page and its completion',async()=>{
+    const old=deferred(), reopened=deferred();let requests=0;const base=invoke.getMockImplementation();
+    invoke.mockImplementation((cmd,args)=>cmd==='list_messages'?(++requests===1?old.promise:reopened.promise):base(cmd,args));
+    const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});await ui.findByText('Loading emails…');
+    handlers.get('main_window_hidden')({});handlers.get('main_window_shown')({});
+    await ui.findByText('Loading emails…');old.resolve([{...rows(1)[0],subject:'Stale hidden response'}]);
+    await waitFor(()=>expect(requests).toBe(2));
+    expect(ui.queryByText('Stale hidden response')).not.toBeInTheDocument();await ui.findByText('Loading emails…');
+    reopened.resolve(rows());await ui.findByText('Subject 1');
+  });
+
+  test('switching archives rejects old account, statistics, and message responses',async()=>{
+    const pending=deferred();const base=invoke.getMockImplementation();
+    invoke.mockImplementation((cmd,args)=>args?.dbPath==='/old.db'&&['list_accounts','list_messages','get_archive_stats'].includes(cmd)?pending.promise:base(cmd,args));
+    const ui=render(MainDashboard,{db_path:'/old.db'});await ui.findByText('Loading your archive…');
+    await ui.rerender({db_path:'/new.db'});await ui.findByText('Subject 1');pending.resolve([]);
+    await waitFor(()=>expect(ui.getByRole('option',{name:'test@example.com'})).toBeInTheDocument());
+    expect(ui.getByText('Subject 1')).toBeInTheDocument();expect(ui.getByRole('button',{name:'Sync Now'})).toBeEnabled();
+  });
+
+  test('the initial page is fetched once, without a duplicate debounced search',async()=>{
+    const ui=render(MainDashboard,{db_path:'/tmp/archive.db'});await ui.findByText('Subject 1');
+    await new Promise(resolve=>setTimeout(resolve,450));
+    expect(invoke.mock.calls.filter(([cmd])=>cmd==='list_messages')).toHaveLength(1);
+    expect(invoke.mock.calls.filter(([cmd])=>cmd==='get_archive_stats')).toHaveLength(1);
+  });
   test('export checkboxes are separate from preview buttons and toggle independently', async () => {
     const preview = vi.fn(), toggle = vi.fn();
     const ui = render(VirtualList, {items: rows(1), bulk_mode: true, on_click: preview, on_toggle_selection: toggle});

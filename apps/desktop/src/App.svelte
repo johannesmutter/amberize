@@ -3,12 +3,17 @@
   import MainDashboard from './components/MainDashboard.svelte';
   import SettingsPage from './components/SettingsPage.svelte';
   import { load_config } from './lib/config.js';
-  import { tauri_invoke, listen_scoped, tauri_save_dialog, tauri_check_update, tauri_restart_app } from './lib/tauri_bridge.js';
+  import { tauri_invoke, listen_scoped, tauri_open_dialog, tauri_save_dialog, tauri_check_update, tauri_restart_app } from './lib/tauri_bridge.js';
 
   let config = $state(null);
   let config_loading = $state(true);
   let startup_error = $state('');
   let startup_warning = $state('');
+  let dismissed_startup_warning = $state('');
+  let recovery_selecting = $state(false);
+  let recovery_selection_error = $state('');
+  let banner_height = $state(0);
+  let integrity_generation = 0;
   let listeners_ready = $state(false);
 
   /** @type {'archive-location' | 'dashboard' | 'settings'} */
@@ -43,13 +48,14 @@
   });
 
   async function restore_archive() {
+    integrity_generation++;
     config_loading = true; startup_error = '';
     try {
       config = await load_config();
-      current_page = config?.db_path ? 'dashboard' : 'archive-location';
       if (config?.db_path) await tauri_invoke('set_active_db_path', {dbPath:config.db_path});
       startup_warning = await tauri_invoke('get_startup_warning') ?? '';
       if (config?.db_path) await refresh_integrity();
+      current_page = config?.db_path ? 'dashboard' : 'archive-location';
     } catch (err) { startup_error = err instanceof Error ? err.message : String(err); }
     finally { config_loading = false; }
   }
@@ -63,10 +69,40 @@
   }, () => { listeners_ready = true; }));
   $effect(() => { if (listeners_ready && !config_loading) void tauri_invoke('frontend_ready').catch(() => {}); });
   async function refresh_integrity() {
+    const generation = ++integrity_generation;
+    const path = config?.db_path;
     try {
-      integrity_status = await tauri_invoke('get_integrity_status');
-      startup_warning = await tauri_invoke('get_startup_warning') ?? '';
-    } catch (err) { startup_warning = String(err); }
+      const [status, warning] = await Promise.all([
+        tauri_invoke('get_integrity_status'), tauri_invoke('get_startup_warning'),
+      ]);
+      if (generation !== integrity_generation || disposed || path !== config?.db_path) return;
+      integrity_status = status;
+      startup_warning = warning ?? '';
+    } catch (err) {
+      if (generation === integrity_generation && !disposed && path === config?.db_path) startup_warning = String(err);
+    }
+  }
+
+  async function dismiss_startup_warning() {
+    const warning = startup_warning;
+    dismissed_startup_warning = warning;
+    // Locally dismiss immediately; matching protects a newer backend warning.
+    await tauri_invoke('dismiss_startup_warning', {warning}).catch(() => {});
+  }
+
+  async function choose_recovery_archive() {
+    if (recovery_selecting) return;
+    recovery_selecting = true;
+    recovery_selection_error = '';
+    try {
+      const path = await tauri_open_dialog({
+        title: 'Choose your existing archive', multiple: false, directory: false,
+        filters: [{name: 'SQLite archive', extensions: ['sqlite3', 'sqlite', 'db']}],
+      });
+      if (path) await handle_archive_selected(path, false);
+    } catch (err) {
+      recovery_selection_error = err instanceof Error ? err.message : String(err);
+    } finally { recovery_selecting = false; }
   }
 
   // Auto-check for updates on launch (non-blocking, silent on no-update)
@@ -279,7 +315,9 @@
    */
   async function handle_archive_selected(db_path, create = false) {
     const saved = await tauri_invoke('select_archive', {dbPath:db_path.trim(),create});
+    integrity_generation++;
     config = saved; startup_error = ''; startup_warning = ''; integrity_status = null;
+    dismissed_startup_warning = ''; recovery_selection_error = '';
     current_page = 'dashboard'; await refresh_integrity();
   }
 
@@ -328,7 +366,6 @@
     }
   }
 
-  $effect(() => { if (config?.db_path && current_page === 'dashboard') void refresh_integrity(); });
 </script>
 
 <svelte:window onkeydown={handle_global_keydown} />
@@ -337,6 +374,8 @@
   <span class="app-titlebar-text" data-tauri-drag-region>Amberize — Seal your emails in time</span>
 </div>
 
+<div class="app-shell" style:--banner-height={`${banner_height > 0 ? banner_height + 1 : 0}px`}>
+<div class="banner-stack" bind:clientHeight={banner_height}>
 {#if available_update}
   <div class="update-banner">
     <span class="update-banner-text">Update available: v{available_update.version}</span>
@@ -364,7 +403,12 @@
   </div>
 {/if}
 
-{#if startup_warning}<div class="update-banner update-banner-warning" role="status">{startup_warning}</div>{/if}
+{#if startup_warning && startup_warning !== dismissed_startup_warning && !startup_error && !config_loading}
+  <div class="update-banner update-banner-warning" role="status">
+    <span class="update-banner-text">{startup_warning}</span>
+    <button type="button" class="update-banner-dismiss" onclick={dismiss_startup_warning} aria-label="Dismiss archive warning">×</button>
+  </div>
+{/if}
 {#if export_message}
   <div class="update-banner update-banner-info" role="status">
     <span class="update-banner-text">{export_message}</span>
@@ -387,16 +431,26 @@
     </button>
   </div>
 {/if}
+</div>
 
 {#if config_loading}
-  <div class="boot-state">Loading…</div>
+  <div class="boot-state" role="status"><span class="loading-spinner" aria-hidden="true"></span>Opening your archive…</div>
 {:else if startup_error && current_page !== 'settings'}
-  <div class="boot-state" role="alert">
-    <p>Amberize could not restore your archive.</p><p>{startup_error}</p>
-    {#if config?.db_path}<code>{config.db_path}</code>{/if}
-    <p>Reconnect the archive's drive, then retry, or choose its existing file. Your saved location has been kept.</p>
-    <button onclick={restore_archive}>Retry saved archive</button>
-    <button onclick={() => { startup_error = ''; handle_change_db_path(); }}>Choose archive</button>
+  <div class="boot-state">
+    <section class="archive-recovery" aria-labelledby="recovery-title">
+      <h1 id="recovery-title">{config?.db_path ? 'Your archive is unavailable' : 'Your archive settings could not be loaded'}</h1>
+      <p>{config?.db_path ? 'If you moved the archive, choose its existing file at the new location. If its drive is disconnected, reconnect it and retry.' : 'Retry loading your settings, or choose your existing archive.'}</p>
+      {#if config?.db_path}
+        <div class="saved-location"><span>Saved archive location</span><code>{config.db_path}</code></div>
+      {/if}
+      <p class="recovery-note">Your saved location will be kept until an archive opens successfully.</p>
+      <div class="recovery-actions">
+        <button class="primary" onclick={choose_recovery_archive} disabled={recovery_selecting}>{recovery_selecting ? 'Opening archive…' : 'Choose existing archive'}</button>
+        <button onclick={restore_archive} disabled={recovery_selecting}>Retry saved archive</button>
+      </div>
+      {#if recovery_selection_error}<p class="recovery-error" role="alert">{recovery_selection_error}</p>{/if}
+      <details><summary>Technical details</summary><p>{startup_error}</p></details>
+    </section>
   </div>
 {:else if current_page === 'archive-location'}
   <ArchiveLocationScreen on_continue={handle_archive_selected} />
@@ -411,13 +465,16 @@
     on_change_db_path={handle_change_db_path}
   />
 {:else}
+  {#key config?.db_path}
   <MainDashboard
     db_path={config?.db_path ?? ''}
     on_open_settings={handle_open_settings}
     dashboard_action_nonce={dashboard_action_nonce}
     dashboard_action_type={dashboard_action_type}
   />
+  {/key}
 {/if}
+</div>
 
 <style>
   .app-titlebar {
@@ -444,11 +501,15 @@
     -webkit-app-region: drag;
   }
 
-  .update-banner {
+  .banner-stack {
     position: fixed;
     top: var(--titlebar-height);
     left: 0;
     right: 0;
+    z-index: 99;
+  }
+
+  .update-banner {
     display: flex;
     align-items: center;
     justify-content: center;
@@ -457,7 +518,7 @@
     background: var(--color-accent);
     color: var(--color-text-on-accent);
     font-size: var(--font-size-xs);
-    z-index: 99;
+    flex-wrap: wrap;
   }
 
   .update-banner-info {
@@ -474,6 +535,9 @@
 
   .update-banner-text {
     font-weight: var(--font-weight-medium);
+    flex: 1;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 
   .update-banner-action {
@@ -504,6 +568,8 @@
     color: inherit;
     font-size: 16px;
     cursor: pointer;
+    min-width: 40px;
+    min-height: 40px;
     padding: 0 var(--space-xs);
     line-height: 1;
     opacity: 0.7;
@@ -516,11 +582,27 @@
 
   .boot-state {
     display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
     align-items: center;
     justify-content: center;
-    min-height: calc(100vh - var(--titlebar-height));
-    padding-top: var(--titlebar-height);
-    color: var(--color-text-tertiary);
+    min-height: 100vh;
+    padding: calc(var(--titlebar-height) + var(--banner-height, 0px) + var(--space-xl)) var(--space-lg) var(--space-xl);
+    color: var(--color-text-secondary);
     font-size: var(--font-size-sm);
   }
+
+  .archive-recovery { width: 100%; max-width: 520px; line-height: 1.6; }
+  .archive-recovery h1 { margin: 0 0 var(--space-md); color: var(--color-text); font-size: var(--font-size-xl); text-wrap: balance; }
+  .archive-recovery p { margin: 0 0 var(--space-lg); }
+  .saved-location { padding: var(--space-md); margin-bottom: var(--space-md); background: var(--color-bg-secondary); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+  .saved-location span { display: block; margin-bottom: var(--space-xs); font-size: var(--font-size-xs); }
+  .saved-location code { display: block; color: var(--color-text); overflow-wrap: anywhere; }
+  .recovery-note { font-size: var(--font-size-xs); }
+  .recovery-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); margin-bottom: var(--space-lg); }
+  .recovery-actions button { min-height: 40px; }
+  .archive-recovery details { overflow-wrap: anywhere; font-size: var(--font-size-xs); }
+  .archive-recovery summary { cursor: pointer; }
+  .archive-recovery details p { margin-top: var(--space-sm); }
+  .recovery-error { color: var(--color-error); }
 </style>
