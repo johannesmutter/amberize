@@ -13,6 +13,8 @@ curl --fail --location --retry 3 --max-time 120 \
   --output "$qa_root/linuxdeploy-plugin-appimage.AppImage"
 chmod 0755 "$qa_root/"*.AppImage
 XDG_CACHE_HOME="$qa_root/cache" node "$repository_root/scripts/prepare_appimage_tools.mjs"
+mkdir "$qa_root/working-directory"
+cd "$qa_root/working-directory"
 
 for channel in latest latest-pre; do
   appdir="$qa_root/$channel.AppDir"
