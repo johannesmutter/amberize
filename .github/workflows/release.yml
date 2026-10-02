@@ -53,7 +53,14 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev squashfs-tools
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev squashfs-tools zsync
+
+      - name: Configure external AppImage updates (Linux)
+        if: runner.os == 'Linux'
+        env:
+          UPDATE_CHANNEL: ${{ contains(github.ref_name, '-') && 'latest-pre' || 'latest' }}
+        run: |
+          echo "UPDATE_INFORMATION=gh-releases-zsync|johannesmutter|amberize|$UPDATE_CHANNEL|Amberize_*_amd64.AppImage.zsync" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4be9e76fd7c4901c61fb841f559994984270fce7 # stable
@@ -142,6 +149,7 @@ jobs:
           extraction_dir=$(mktemp -d)
           trap 'rm -rf "$extraction_dir"' EXIT
           for appimage in "${appimages[@]}"; do
+            python3 scripts/verify_appimage_update.py "$appimage" --expected-update-information "$UPDATE_INFORMATION"
             (
               cd "$extraction_dir"
               python3 "$GITHUB_WORKSPACE/scripts/extract_appimage.py" "$appimage" "$extraction_dir/squashfs-root" > /dev/null
@@ -279,6 +287,18 @@ jobs:
           report.write_text(json.dumps(result, indent=2) + '\n')
           print(json.dumps(result))
           PY
+
+      - name: Upload verified AppImage update sidecars
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq '.isDraft')" = true || { echo "::error::Refusing to replace assets on a published release"; exit 1; }
+          for appimage in "target/${{ matrix.target }}/release/bundle/appimage/"*.AppImage; do
+            gh release upload "$GITHUB_REF_NAME" "$appimage.zsync" --clobber
+          done
 
       - name: Upload native release evidence
         if: always()

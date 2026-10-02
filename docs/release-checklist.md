@@ -59,7 +59,7 @@ From repo root:
    - Assets should include installers and updater files, e.g.:
      - macOS: `*.dmg`, `*.app.tar.gz`, `*.app.tar.gz.sig`
      - Windows: `*.msi` (or other configured installer)
-     - Linux: `*.deb`, `*.AppImage`
+     - Linux: `*.deb`, `*.AppImage`, matching `*.AppImage.zsync`
      - updater: `latest.json`
 
 ## 3) Publish and verify updater metadata
@@ -76,6 +76,8 @@ The AppImage catalog reported a broken `.DirIcon` in `v0.2.3`: it linked to an a
 Its later test of `v0.2.4` exposed root-owned `AppRun.wrapped` with mode `0770`. The `beforeBundleCommand` now prepares Tauri's pinned upstream launcher with mode `0755`; this runs before signing and uploading, including local package builds. A build-user-only execution check is insufficient because it can retain access that a mounted AppImage denies to ordinary users.
 
 For permission checks, extract with `scripts/extract_appimage.py` and `unsquashfs`, which restores stored SquashFS modes. The runtime's `--appimage-extract` creates directories with private modes and therefore cannot establish whether the package's stored directories are accessible to unrelated users. Never chmod an extracted fixture to make a defective package pass.
+
+New Linux releases embed external update information through linuxdeploy's `UPDATE_INFORMATION` before Tauri signs the AppImage. Stable tags use `gh-releases-zsync|johannesmutter|amberize|latest|Amberize_*_amd64.AppImage.zsync`; prerelease tags use `latest-pre`. The release verifier checks the embedded ELF metadata, source filename/URL, payload size/SHA-1 and independently regenerated zsync checksum table. After native QA succeeds, the sidecar is uploaded beside its matching AppImage to the draft release. Confirm both assets are present before publication. Published 0.2.7 has no external update metadata; this change takes effect with the next newly built release. Never retrofit metadata into an already signed/published AppImage.
 
 After publishing a new release with the corrected AppImage, comment `/retest` on [AppImage catalog PR #8381](https://github.com/AppImage/appimage.github.io/pull/8381).
 

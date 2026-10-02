@@ -1,0 +1,11 @@
+# AppImage external update support
+
+The user approved adding AppImage update metadata and matching `.zsync` assets to the existing release pipeline, followed by committing and pushing. The current published 0.2.7 package remains immutable; support first appears in the next newly built release. The built-in Tauri updater and its signing keys remain unchanged.
+
+Use linuxdeploy's supported `UPDATE_INFORMATION` environment variable before Tauri bundling. Embed `gh-releases-zsync|johannesmutter|amberize|latest|Amberize_*_amd64.AppImage.zsync` for stable tags; prerelease tags use `latest-pre`. The architecture-specific wildcard finds exactly the versioned AppImage sidecar without matching Debian, signatures or tarballs. This native packaging approach preserves signing order and avoids repacking an already signed artifact. Repacking after the Tauri action would invalidate signatures; manually patching ELF metadata would duplicate upstream packaging behavior.
+
+The Linux release job installs `zsync`, verifies embedded ELF `.upd_info` directly without launching or rewriting the AppImage, and requires the matching `.AppImage.zsync`. A standalone verifier checks the update channel, filename, source URL, payload length and SHA-1, then independently regenerates the binary checksum table with `zsyncmake` to reject corrupt or stale sidecars. The verifier reads payload hashes in bounded chunks. Existing permission, glibc, native recovery and signing checks remain required.
+
+After successful Linux checks, upload the `.zsync` sidecar to the same draft GitHub release. Refuse uploads if the release is already published. The pinned Tauri action does not discover `.zsync`, so an explicit upload step is necessary. No version bump, tag creation or publication is part of this request.
+
+Validation covers missing or incorrect embedded metadata, wrong filename or URL, stale payload hashes, truncated or corrupt checksum tables, and preservation of input bytes. A lightweight hosted Linux packaging check exercises real linuxdeploy output with a tiny fixture instead of recompiling Rust locally. It confirms generated metadata and sidecar validity for stable and prerelease channels. A future release still needs the normal complete release workflow before publication.

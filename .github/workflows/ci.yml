@@ -138,3 +138,19 @@ jobs:
           node-version: "20"
       - run: node --test scripts/test_appimage_tools.mjs
       - run: python3 -m unittest discover -s scripts -p 'test_*.py'
+
+  appimage-updates:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+      - name: Install lightweight packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsync desktop-file-utils patchelf
+      - name: Test update metadata and corrupted sidecars
+        run: python3 -m unittest discover -s scripts -p 'test_appimage_update.py' -v
+      - name: Package stable and prerelease AppImage update fixtures
+        run: bash scripts/test_appimage_packaging.sh
