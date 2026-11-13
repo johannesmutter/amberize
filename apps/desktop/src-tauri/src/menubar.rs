@@ -48,7 +48,11 @@ pub fn setup_menubar(app: &mut App) -> tauri::Result<()> {
         });
 
     // Use an explicit, small PNG for crisp rendering in the macOS menu bar.
-    tray_builder = tray_builder.icon(tauri::include_image!("icons/tray-icon.png"));
+    // As a template image macOS uses only its alpha and tints it to match the
+    // menu bar, so it stays visible on light and dark menu bars alike.
+    tray_builder = tray_builder
+        .icon(tauri::include_image!("icons/tray-icon.png"))
+        .icon_as_template(true);
 
     tray_builder.build(app)?;
 
